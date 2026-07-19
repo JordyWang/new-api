@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
@@ -82,6 +83,16 @@ func TestResolveChannelTestUserIDUsesRequestUser(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Equal(t, 2, userID)
+}
+
+func TestShouldUseStreamForChannelTestForcesCodexOnly(t *testing.T) {
+	require.True(t, shouldUseStreamForChannelTest(&model.Channel{
+		Type: constant.ChannelTypeCodex,
+	}))
+	require.False(t, shouldUseStreamForChannelTest(&model.Channel{
+		Type: constant.ChannelTypeOpenAI,
+	}))
+	require.False(t, shouldUseStreamForChannelTest(nil))
 }
 
 func TestSelectChannelsForAutomaticTestPassiveRecoveryOnlyUsesAutoDisabled(t *testing.T) {
