@@ -23,6 +23,7 @@ import { BotProtectionSection } from './bot-protection-section'
 import { CustomOAuthSection } from './custom-oauth/custom-oauth-section'
 import { OAuthSection } from './oauth-section'
 import { PasskeySection } from './passkey-section'
+import { RegistrationInviteCodeSection } from './registration-invite-code-section'
 
 const AUTH_SECTIONS = [
   {
@@ -41,6 +42,11 @@ const AUTH_SECTIONS = [
         }}
       />
     ),
+  },
+  {
+    id: 'registration-invite-code',
+    titleKey: 'Invitation Code',
+    build: () => <RegistrationInviteCodeSection />,
   },
   {
     id: 'oauth',

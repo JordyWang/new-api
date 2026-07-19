@@ -28,6 +28,10 @@ func GenerateOAuthCode(c *gin.Context) {
 	if affCode != "" {
 		session.Set("aff", affCode)
 	}
+	inviteCode := c.Query("invite_code")
+	if inviteCode != "" {
+		session.Set("invite_code", inviteCode)
+	}
 	session.Set("oauth_state", state)
 	err := session.Save()
 	if err != nil {
@@ -107,6 +111,9 @@ func HandleOAuth(c *gin.Context) {
 	// 7. Find or create user
 	user, err := findOrCreateOAuthUser(c, provider, oauthUser, session)
 	if err != nil {
+		if writeRegistrationInviteCodeError(c, err) {
+			return
+		}
 		if errors.Is(err, model.ErrEmailAlreadyTaken) {
 			common.ApiErrorI18n(c, i18n.MsgUserEmailAlreadyTaken)
 			return
@@ -275,70 +282,63 @@ func findOrCreateOAuthUser(c *gin.Context, provider oauth.Provider, oauthUser *o
 	user.Role = common.RoleCommonUser
 	user.Status = common.UserStatusEnabled
 
-	// Handle affiliate code
-	affCode := session.Get("aff")
+	// Handle affiliate and registration invitation codes separately. The
+	// affiliate code remains optional; a new OAuth account must also consume
+	// the configured registration invitation code.
+	affCode := ""
+	if value, ok := session.Get("aff").(string); ok {
+		affCode = value
+	}
 	inviterId := 0
-	if affCode != nil {
-		inviterId, _ = model.GetUserIdByAffCode(affCode.(string))
+	if affCode != "" {
+		inviterId, _ = model.GetUserIdByAffCode(affCode)
+	}
+	inviteCode := ""
+	if value, ok := session.Get("invite_code").(string); ok {
+		inviteCode = value
+	}
+	if inviteCode == "" {
+		// Compatibility for clients that only know the legacy aff parameter.
+		inviteCode = affCode
 	}
 
 	// Use transaction to ensure user creation and OAuth binding are atomic
-	if genericProvider, ok := provider.(*oauth.GenericOAuthProvider); ok {
-		// Custom provider: create user and binding in a transaction
-		err := model.DB.Transaction(func(tx *gorm.DB) error {
-			// Create user
-			if err := user.InsertWithTx(tx, inviterId); err != nil {
-				return err
-			}
+	if err := model.DB.Transaction(func(tx *gorm.DB) error {
+		inviteConfig, err := model.ReserveRegistrationInviteCode(tx, inviteCode)
+		if err != nil {
+			return err
+		}
+		if err := user.InsertWithTxOptions(tx, inviterId, &model.UserInsertOptions{
+			Quota: &inviteConfig.InitialQuota,
+			Group: inviteConfig.Group,
+		}); err != nil {
+			return err
+		}
 
-			// Create OAuth binding
+		if genericProvider, ok := provider.(*oauth.GenericOAuthProvider); ok {
 			binding := &model.UserOAuthBinding{
 				UserId:         user.Id,
 				ProviderId:     genericProvider.GetProviderId(),
 				ProviderUserId: oauthUser.ProviderUserID,
 			}
-			if err := model.CreateUserOAuthBindingWithTx(tx, binding); err != nil {
-				return err
-			}
-
-			return nil
-		})
-		if err != nil {
-			return nil, err
+			return model.CreateUserOAuthBindingWithTx(tx, binding)
 		}
 
-		// Perform post-transaction tasks (logs, sidebar config, inviter rewards)
-		user.FinalizeOAuthUserCreation(inviterId)
-	} else {
-		// Built-in provider: create user and update provider ID in a transaction
-		err := model.DB.Transaction(func(tx *gorm.DB) error {
-			// Create user
-			if err := user.InsertWithTx(tx, inviterId); err != nil {
-				return err
-			}
-
-			// Set the provider user ID on the user model and update
-			provider.SetProviderUserID(user, oauthUser.ProviderUserID)
-			if err := tx.Model(user).Updates(map[string]interface{}{
-				"github_id":   user.GitHubId,
-				"discord_id":  user.DiscordId,
-				"oidc_id":     user.OidcId,
-				"linux_do_id": user.LinuxDOId,
-				"wechat_id":   user.WeChatId,
-				"telegram_id": user.TelegramId,
-			}).Error; err != nil {
-				return err
-			}
-
-			return nil
-		})
-		if err != nil {
-			return nil, err
-		}
-
-		// Perform post-transaction tasks
-		user.FinalizeOAuthUserCreation(inviterId)
+		provider.SetProviderUserID(user, oauthUser.ProviderUserID)
+		return tx.Model(user).Updates(map[string]interface{}{
+			"github_id":   user.GitHubId,
+			"discord_id":  user.DiscordId,
+			"oidc_id":     user.OidcId,
+			"linux_do_id": user.LinuxDOId,
+			"wechat_id":   user.WeChatId,
+			"telegram_id": user.TelegramId,
+		}).Error
+	}); err != nil {
+		return nil, err
 	}
+
+	// Perform post-transaction tasks (logs, sidebar config, inviter rewards)
+	user.FinalizeOAuthUserCreation(inviterId)
 
 	return user, nil
 }

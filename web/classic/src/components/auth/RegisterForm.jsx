@@ -77,6 +77,7 @@ const RegisterForm = () => {
     username: '',
     password: '',
     password2: '',
+    invite_code: '',
     email: '',
     verification_code: '',
     wechat_verification_code: '',
@@ -118,6 +119,17 @@ const RegisterForm = () => {
   if (affCode) {
     localStorage.setItem('aff', affCode);
   }
+  let inviteCode = new URLSearchParams(window.location.search).get(
+    'invite_code',
+  );
+  if (inviteCode) {
+    localStorage.setItem('invite_code', inviteCode);
+  } else {
+    inviteCode = localStorage.getItem('invite_code') || affCode || '';
+    if (inviteCode) {
+      localStorage.setItem('invite_code', inviteCode);
+    }
+  }
 
   const status = useMemo(() => {
     if (statusState?.status) return statusState.status;
@@ -133,12 +145,12 @@ const RegisterForm = () => {
     (status.custom_oauth_providers || []).length > 0;
   const hasOAuthRegisterOptions = Boolean(
     status.github_oauth ||
-      status.discord_oauth ||
-      status.oidc_enabled ||
-      status.wechat_login ||
-      status.linuxdo_oauth ||
-      status.telegram_oauth ||
-      hasCustomOAuthProviders,
+    status.discord_oauth ||
+    status.oidc_enabled ||
+    status.wechat_login ||
+    status.linuxdo_oauth ||
+    status.telegram_oauth ||
+    hasCustomOAuthProviders,
   );
 
   const [showEmailVerification, setShowEmailVerification] = useState(false);
@@ -154,6 +166,14 @@ const RegisterForm = () => {
     setHasUserAgreement(status?.user_agreement_enabled || false);
     setHasPrivacyPolicy(status?.privacy_policy_enabled || false);
   }, [status]);
+
+  useEffect(() => {
+    if (inviteCode) {
+      setInputs((current) =>
+        current.invite_code ? current : { ...current, invite_code: inviteCode },
+      );
+    }
+  }, [inviteCode]);
 
   useEffect(() => {
     let countdownInterval = null;
@@ -177,6 +197,7 @@ const RegisterForm = () => {
   }, []);
 
   const onWeChatLoginClicked = () => {
+    if (!getRequiredRegistrationInviteCode()) return;
     setWechatLoading(true);
     setShowWeChatLoginModal(true);
     setWechatLoading(false);
@@ -189,9 +210,13 @@ const RegisterForm = () => {
     }
     setWechatCodeSubmitLoading(true);
     try {
-      const res = await API.get(
-        `/api/oauth/wechat?code=${inputs.wechat_verification_code}`,
-      );
+      const res = await API.get('/api/oauth/wechat', {
+        params: {
+          code: inputs.wechat_verification_code,
+          invite_code:
+            inputs.invite_code || localStorage.getItem('invite_code') || '',
+        },
+      });
       const { success, message, data } = res.data;
       if (success) {
         userDispatch({ type: 'login', payload: data });
@@ -212,7 +237,30 @@ const RegisterForm = () => {
   };
 
   function handleChange(name, value) {
+    if (name === 'invite_code') {
+      const normalizedCode = String(value || '').trim();
+      if (normalizedCode) {
+        localStorage.setItem('invite_code', normalizedCode);
+      } else {
+        localStorage.removeItem('invite_code');
+      }
+    }
     setInputs((inputs) => ({ ...inputs, [name]: value }));
+  }
+
+  function getRequiredRegistrationInviteCode() {
+    const registrationInviteCode = String(
+      inputs.invite_code ||
+        localStorage.getItem('invite_code') ||
+        affCode ||
+        '',
+    ).trim();
+    if (!registrationInviteCode) {
+      showInfo(t('请输入邀请码'));
+      return '';
+    }
+    localStorage.setItem('invite_code', registrationInviteCode);
+    return registrationInviteCode;
   }
 
   async function handleSubmit(e) {
@@ -234,10 +282,16 @@ const RegisterForm = () => {
         if (!affCode) {
           affCode = localStorage.getItem('aff');
         }
-        inputs.aff_code = affCode;
+        const registrationInviteCode = getRequiredRegistrationInviteCode();
+        if (!registrationInviteCode) return;
+        const payload = {
+          ...inputs,
+          aff_code: affCode,
+          invite_code: registrationInviteCode,
+        };
         const res = await API.post(
           `/api/user/register?turnstile=${turnstileToken}`,
-          inputs,
+          payload,
         );
         const { success, message } = res.data;
         if (success) {
@@ -280,6 +334,7 @@ const RegisterForm = () => {
   };
 
   const handleGitHubClick = () => {
+    if (!getRequiredRegistrationInviteCode()) return;
     if (githubButtonDisabled) {
       return;
     }
@@ -302,6 +357,7 @@ const RegisterForm = () => {
   };
 
   const handleDiscordClick = () => {
+    if (!getRequiredRegistrationInviteCode()) return;
     setDiscordLoading(true);
     try {
       onDiscordOAuthClicked(status.discord_client_id, { shouldLogout: true });
@@ -311,6 +367,7 @@ const RegisterForm = () => {
   };
 
   const handleOIDCClick = () => {
+    if (!getRequiredRegistrationInviteCode()) return;
     setOidcLoading(true);
     try {
       onOIDCClicked(
@@ -325,6 +382,7 @@ const RegisterForm = () => {
   };
 
   const handleLinuxDOClick = () => {
+    if (!getRequiredRegistrationInviteCode()) return;
     setLinuxdoLoading(true);
     try {
       onLinuxDOOAuthClicked(status.linuxdo_client_id, { shouldLogout: true });
@@ -334,6 +392,7 @@ const RegisterForm = () => {
   };
 
   const handleCustomOAuthClick = (provider) => {
+    if (!getRequiredRegistrationInviteCode()) return;
     setCustomOAuthLoading((prev) => ({ ...prev, [provider.slug]: true }));
     try {
       onCustomOAuthClicked(provider, { shouldLogout: true });
@@ -410,6 +469,16 @@ const RegisterForm = () => {
             </div>
             <div className='px-2 py-8'>
               <div className='space-y-3'>
+                <Form.Input
+                  field='invite_code'
+                  label={t('邀请码')}
+                  placeholder={t('请输入邀请码')}
+                  name='invite_code'
+                  value={inputs.invite_code}
+                  onChange={(value) => handleChange('invite_code', value)}
+                  prefix={<IconKey />}
+                />
+
                 {status.wechat_login && (
                   <Button
                     theme='outline'
@@ -580,6 +649,16 @@ const RegisterForm = () => {
                   name='username'
                   onChange={(value) => handleChange('username', value)}
                   prefix={<IconUser />}
+                />
+
+                <Form.Input
+                  field='invite_code'
+                  label={t('邀请码')}
+                  placeholder={t('请输入邀请码')}
+                  name='invite_code'
+                  value={inputs.invite_code}
+                  onChange={(value) => handleChange('invite_code', value)}
+                  prefix={<IconKey />}
                 />
 
                 <Form.Input
@@ -781,8 +860,7 @@ const RegisterForm = () => {
         style={{ top: '50%', left: '-120px' }}
       />
       <div className='w-full max-w-sm mt-[60px]'>
-        {showEmailRegister ||
-        !hasOAuthRegisterOptions
+        {showEmailRegister || !hasOAuthRegisterOptions
           ? renderEmailRegisterForm()
           : renderOAuthOptions()}
         {renderWeChatLoginModal()}

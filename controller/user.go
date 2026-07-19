@@ -32,6 +32,11 @@ type LoginRequest struct {
 	Password string `json:"password"`
 }
 
+type RegisterRequest struct {
+	model.User
+	InviteCode string `json:"invite_code"`
+}
+
 var (
 	errUserPasswordUnset    = errors.New("user password is not set")
 	errOriginalPasswordFail = errors.New("original password is incorrect")
@@ -195,10 +200,22 @@ func Register(c *gin.Context) {
 		common.ApiErrorI18n(c, i18n.MsgUserPasswordRegisterDisabled)
 		return
 	}
-	var user model.User
-	err := json.NewDecoder(c.Request.Body).Decode(&user)
+	var registerRequest RegisterRequest
+	err := common.DecodeJson(c.Request.Body, &registerRequest)
 	if err != nil {
 		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+	user := registerRequest.User
+	inviteCode := strings.TrimSpace(registerRequest.InviteCode)
+	// Older clients used aff_code as the only registration code. Keep it as a
+	// compatibility fallback while allowing aff_code to remain an optional
+	// inviter referral when the new invite_code field is present.
+	if inviteCode == "" {
+		inviteCode = strings.TrimSpace(user.AffCode)
+	}
+	if inviteCode == "" {
+		writeRegistrationInviteCodeError(c, model.ErrRegistrationInviteCodeRequired)
 		return
 	}
 	user.Username = strings.TrimSpace(user.Username)
@@ -255,14 +272,30 @@ func Register(c *gin.Context) {
 	if common.EmailVerificationEnabled {
 		cleanUser.Email = user.Email
 	}
-	if err := cleanUser.Insert(inviterId); err != nil {
+	var inviteConfig *model.RegistrationInviteCode
+	if err := model.DB.Transaction(func(tx *gorm.DB) error {
+		var err error
+		inviteConfig, err = model.ReserveRegistrationInviteCode(tx, inviteCode)
+		if err != nil {
+			return err
+		}
+		return cleanUser.InsertWithTxOptions(tx, inviterId, &model.UserInsertOptions{
+			Quota: &inviteConfig.InitialQuota,
+			Group: inviteConfig.Group,
+		})
+	}); err != nil {
+		if writeRegistrationInviteCodeError(c, err) {
+			return
+		}
 		if errors.Is(err, model.ErrEmailAlreadyTaken) {
 			common.ApiErrorI18n(c, i18n.MsgUserEmailAlreadyTaken)
 			return
 		}
-		common.ApiError(c, err)
+		common.ApiErrorI18n(c, i18n.MsgDatabaseError)
+		common.SysLog(fmt.Sprintf("Register transaction failed: %v", err))
 		return
 	}
+	cleanUser.FinishInsert(inviterId)
 
 	// 获取插入后的用户ID
 	var insertedUser model.User

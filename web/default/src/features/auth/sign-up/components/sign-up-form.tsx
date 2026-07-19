@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
 import { Loader2 } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -47,7 +47,9 @@ import { useEmailVerification } from '@/features/auth/hooks/use-email-verificati
 import { useTurnstile } from '@/features/auth/hooks/use-turnstile'
 import {
   getAffiliateCode,
+  getRegistrationInviteCode,
   saveAffiliateCode,
+  saveRegistrationInviteCode,
 } from '@/features/auth/lib/storage'
 import { useStatus } from '@/hooks/use-status'
 import { cn } from '@/lib/utils'
@@ -88,6 +90,7 @@ export function SignUpForm({
     resolver: zodResolver(registerFormSchema),
     defaultValues: {
       username: '',
+      inviteCode: getRegistrationInviteCode(),
       email: '',
       password: '',
       confirmPassword: '',
@@ -105,6 +108,14 @@ export function SignUpForm({
     true
   const hasWeChatLogin = Boolean(status?.wechat_login)
   const turnstileReady = !isTurnstileEnabled || Boolean(turnstileToken)
+  let sendVerificationCodeContent: ReactNode = t('Send code')
+  if (isActive) {
+    sendVerificationCodeContent = t('Resend ({{seconds}}s)', {
+      seconds: secondsLeft,
+    })
+  } else if (isSendingCode) {
+    sendVerificationCodeContent = <Loader2 className='h-4 w-4 animate-spin' />
+  }
 
   const wechatQrCodeUrl = useMemo(() => {
     return (
@@ -129,11 +140,19 @@ export function SignUpForm({
   }, [requiresLegalConsent])
 
   useEffect(() => {
-    const aff = new URLSearchParams(window.location.search).get('aff')?.trim()
+    const searchParams = new URLSearchParams(window.location.search)
+    const aff = searchParams.get('aff')?.trim()
     if (aff) {
       saveAffiliateCode(aff)
     }
-  }, [])
+    const inviteCode =
+      searchParams.get('invite_code')?.trim() ||
+      (!getRegistrationInviteCode() ? aff : '')
+    if (inviteCode) {
+      saveRegistrationInviteCode(inviteCode)
+      form.setValue('inviteCode', inviteCode)
+    }
+  }, [form])
 
   async function onSubmit(data: z.infer<typeof registerFormSchema>) {
     if (requiresLegalConsent && !agreedToLegal) {
@@ -157,9 +176,11 @@ export function SignUpForm({
 
     setIsLoading(true)
     try {
+      saveRegistrationInviteCode(data.inviteCode.trim())
       const res = await register({
         username: data.username,
         password: data.password,
+        invite_code: data.inviteCode.trim(),
         email: data.email || undefined,
         verification_code: verificationCode || undefined,
         aff_code: getAffiliateCode(),
@@ -172,7 +193,7 @@ export function SignUpForm({
       } else {
         toast.error(res?.message || t('Failed to create account'))
       }
-    } catch (_error) {
+    } catch {
       // Errors are handled by global interceptor
     } finally {
       setIsLoading(false)
@@ -183,11 +204,27 @@ export function SignUpForm({
     await sendCode(emailValue || '')
   }
 
+  const validateRegistrationInviteCode = () => {
+    const inviteCode = form.getValues('inviteCode').trim()
+    if (!inviteCode) {
+      form.setError('inviteCode', {
+        type: 'manual',
+        message: 'Please enter the invitation code',
+      })
+      toast.error(t('Please enter the invitation code'))
+      return false
+    }
+    saveRegistrationInviteCode(inviteCode)
+    return true
+  }
+
   const handleOpenWeChatDialog = () => {
     if (requiresLegalConsent && !agreedToLegal) {
       toast.error(legalConsentErrorMessage)
       return
     }
+
+    if (!validateRegistrationInviteCode()) return
 
     setIsWeChatDialogOpen(true)
   }
@@ -208,7 +245,10 @@ export function SignUpForm({
 
     setIsWeChatSubmitting(true)
     try {
-      const res = await wechatLoginByCode(wechatCode)
+      const res = await wechatLoginByCode(
+        wechatCode,
+        form.getValues('inviteCode').trim()
+      )
       if (res?.success) {
         await handleLoginSuccess(res.data as { id?: number } | null)
         toast.success(t('Signed in via WeChat'))
@@ -216,7 +256,7 @@ export function SignUpForm({
       } else {
         toast.error(res?.message || t('Login failed'))
       }
-    } catch (_error) {
+    } catch {
       toast.error(t('Login failed'))
     } finally {
       setIsWeChatSubmitting(false)
@@ -239,6 +279,28 @@ export function SignUpForm({
               <FormLabel>{t('Username')}</FormLabel>
               <FormControl>
                 <Input placeholder={t('Enter your username')} {...field} />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+
+        {/* Registration Invitation Code */}
+        <FormField
+          control={form.control}
+          name='inviteCode'
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>{t('Invitation Code')}</FormLabel>
+              <FormControl>
+                <Input
+                  placeholder={t('Invitation Code')}
+                  {...field}
+                  onChange={(event) => {
+                    field.onChange(event)
+                    saveRegistrationInviteCode(event.currentTarget.value)
+                  }}
+                />
               </FormControl>
               <FormMessage />
             </FormItem>
@@ -323,13 +385,7 @@ export function SignUpForm({
                 }
                 onClick={handleSendVerificationCode}
               >
-                {isActive ? (
-                  t('Resend ({{seconds}}s)', { seconds: secondsLeft })
-                ) : isSendingCode ? (
-                  <Loader2 className='h-4 w-4 animate-spin' />
-                ) : (
-                  t('Send code')
-                )}
+                {sendVerificationCodeContent}
               </Button>
             </div>
           </>
@@ -372,6 +428,7 @@ export function SignUpForm({
             disabled={isLoading || (requiresLegalConsent && !agreedToLegal)}
             onWeChatLogin={hasWeChatLogin ? handleOpenWeChatDialog : undefined}
             isWeChatLoading={isWeChatSubmitting}
+            beforeOAuthLogin={validateRegistrationInviteCode}
             className='pt-2'
           />
         )}

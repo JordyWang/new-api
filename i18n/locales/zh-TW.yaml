@@ -106,6 +106,11 @@ user.telegram_id_empty: "Telegram id 為空！"
 user.telegram_not_bound: "該 Telegram 帳號未綁定"
 user.linux_do_id_empty: "Linux DO id 為空！"
 user.quota_change_zero: "額度變更量不能為0"
+user.registration_invite_required: "請輸入邀請碼"
+user.registration_invite_not_configured: "管理員尚未設定註冊邀請碼"
+user.registration_invite_invalid: "邀請碼無效"
+user.registration_invite_expired: "邀請碼已過期"
+user.registration_invite_exhausted: "邀請碼註冊人數已達上限"
 
 # Quota messages
 quota.negative: "額度不能為負數！"

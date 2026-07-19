@@ -90,6 +90,8 @@ export {
   removeUserId,
   getAffiliateCode,
   saveAffiliateCode,
+  getRegistrationInviteCode,
+  saveRegistrationInviteCode,
 } from './lib/storage'
 
 export {

@@ -199,6 +199,12 @@ func SetApiRouter(router *gin.Engine) {
 			optionRoute.POST("/waffo-pancake/subscription-product", controller.CreateWaffoPancakeSubscriptionProduct)
 			optionRoute.GET("/waffo-pancake/subscription-product-options", controller.ListWaffoPancakeSubscriptionProductOptions)
 		}
+		registrationInviteCodeRoute := apiRouter.Group("/registration/invite-code")
+		registrationInviteCodeRoute.Use(middleware.RootAuth())
+		{
+			registrationInviteCodeRoute.GET("", controller.GetRegistrationInviteCode)
+			registrationInviteCodeRoute.PUT("", controller.UpdateRegistrationInviteCode)
+		}
 
 		// Custom OAuth provider management (root only)
 		customOAuthRoute := apiRouter.Group("/custom-oauth-provider")
