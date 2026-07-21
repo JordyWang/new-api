@@ -1,0 +1,228 @@
+逆向
+逆向工程
+反编译
+反汇编
+二进制分析
+静态分析
+动态分析
+代码分析
+行为分析
+样本分析
+恶意样本分析
+程序破解
+软件破解
+破解分析
+逆向分析
+Binary Analysis
+Reverse Engineering
+Decompiler
+Disassembler
+Static Analysis
+Dynamic Analysis
+CFG
+Control Flow Graph
+Basic Block
+Call Graph
+IDA
+IDA Pro
+Ghidra
+Binary Ninja
+Radare2
+Cutter
+JEB
+Hopper
+010 Editor
+HxD
+WinHex
+objdump
+readelf
+nm
+hexdump
+xxd
+lief
+capstone
+keystone
+unicorn
+angr
+APKTool
+JADX
+dex2jar
+smali
+baksmali
+jadx-gui
+Frida
+Objection
+Xposed
+LSPosed
+EdXposed
+Magisk
+MagiskHide
+zygisk
+VirtualXposed
+Shizuku
+AAPT
+AAPT2
+bundletool
+repack
+重打包
+重签名
+签名绕过
+签名校验
+防重签
+rizin
+API Hook
+Inline Hook
+PLT Hook
+GOT Hook
+IAT Hook
+EAT Hook
+Native Hook
+Java Hook
+Method Hook
+Hook Framework
+Hook Engine
+Function Hook
+Hook Point
+Hook脚本
+Attach Process
+Single Step
+Breakpoint
+Hardware Breakpoint
+Software Breakpoint
+Memory Dump
+Dump Memory
+Register View
+Watchpoint
+Memory Viewer
+Memory Editor
+Patch Memory
+Live Patch
+WinDbg
+x64dbg
+OllyDbg
+PE Explorer
+PEBear
+Process Hacker
+Process Explorer
+Scylla
+Import REC
+TitanHide
+Cheat Engine
+DLL Injection
+Reflective DLL
+IAT
+EAT
+PE Header
+Section Table
+脱壳
+加壳
+UPX
+Themida
+VMProtect
+Enigma
+ASProtect
+OLLVM
+控制流平坦化
+虚拟化保护
+字符串加密
+字符串混淆
+代码混淆
+符号混淆
+控制流混淆
+虚拟机保护
+Anti Debug
+Anti VM
+Anti Sandbox
+漏洞分析
+漏洞研究
+漏洞挖掘
+漏洞利用
+Exploit
+POC
+CVE
+CWE
+CAPEC
+0day
+1day
+RCE
+LPE
+Privilege Escalation
+Buffer Overflow
+Stack Overflow
+Heap Overflow
+Use After Free
+Double Free
+Race Condition
+TOCTOU
+Integer Overflow
+Format String
+Memory Corruption
+破甲
+SQL Injection
+SQLi
+XSS
+Stored XSS
+Reflected XSS
+DOM XSS
+SSRF
+XXE
+CSRF
+SSTI
+Command Injection
+Code Injection
+Template Injection
+File Upload
+File Inclusion
+LFI
+RFI
+Directory Traversal
+Path Traversal
+Open Redirect
+Deserialization
+Malware
+Trojan
+Backdoor
+Rootkit
+Bootkit
+Keylogger
+Dropper
+Downloader
+Crypter
+Stealer
+Ransomware
+Botnet
+C2
+Beacon
+Shellcode
+Implant
+Wireshark
+tcpdump
+Burp Suite
+mitmproxy
+Charles
+Fiddler
+HTTP Toolkit
+Packet Capture
+MITM
+TLS Intercept
+SSL Pinning
+Certificate Pinning
+SOCKS Proxy
+Theos
+Cycript
+fishhook
+class-dump
+dumpdecrypted
+frida-ios
+jailbreak
+越狱分析
+越狱
+gdb
+lldb
+ltrace
+strace
+ptrace
+LD_PRELOAD
+ELF Loader
+objcopy
+core dump
