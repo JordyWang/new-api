@@ -83,9 +83,7 @@ OAuth Token 不会返回前端页面。登录成功后，页面只展示 email�
 
 ```json
 [
-  "--fingerprint-config={fingerprint_file}",
-  "--fingerprint-timezone={timezone}",
-  "--fingerprint-locale={locale}"
+  "--transfigure-fingerprint-config={fingerprint_file}"
 ]
 ```
 
