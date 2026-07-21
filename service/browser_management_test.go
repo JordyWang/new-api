@@ -1,0 +1,96 @@
+package service
+
+import (
+	"os"
+	"strings"
+	"testing"
+
+	"github.com/QuantumNous/new-api/common"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestValidateBrowserProxyURLAcceptsSupportedPublicProxies(t *testing.T) {
+	tests := []struct {
+		name       string
+		proxyURL   string
+		expectURL  string
+		expectType string
+	}{
+		{name: "http credentials", proxyURL: "http://user:pass@203.0.113.10:8080", expectURL: "http://user:pass@203.0.113.10:8080", expectType: "http"},
+		{name: "https domain", proxyURL: "HTTPS://proxy.example.com:443", expectURL: "https://proxy.example.com:443", expectType: "https"},
+		{name: "socks sticky query", proxyURL: "socks5h://user:session@198.51.100.8:1080?region=us", expectURL: "socks5h://user:session@198.51.100.8:1080?region=us", expectType: "socks5h"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			normalized, scheme, err := ValidateBrowserProxyURL(test.proxyURL)
+			require.NoError(t, err)
+			assert.Equal(t, test.expectURL, normalized)
+			assert.Equal(t, test.expectType, scheme)
+		})
+	}
+}
+
+func TestValidateBrowserProxyURLRejectsPrivateAndUnsupportedTargets(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		proxyURL string
+	}{
+		{name: "loopback", proxyURL: "http://127.0.0.1:8080"},
+		{name: "private address", proxyURL: "http://10.0.0.1:8080"},
+		{name: "localhost", proxyURL: "http://localhost:8080"},
+		{name: "multicast", proxyURL: "http://224.0.0.1:8080"},
+		{name: "unsupported scheme", proxyURL: "ftp://203.0.113.10:21"},
+		{name: "path", proxyURL: "http://203.0.113.10:8080/path"},
+		{name: "oversized URL", proxyURL: "http://" + strings.Repeat("a", 4096)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, _, err := ValidateBrowserProxyURL(test.proxyURL)
+			assert.Error(t, err)
+		})
+	}
+}
+
+func TestMaskBrowserProxyURLRemovesCredentialsAndQueryValues(t *testing.T) {
+	masked := MaskBrowserProxyURL("http://sticky-user:secret@proxy.example.com:8080?session=abc&region=us")
+	assert.Equal(t, "http://%2A%2A%2A@proxy.example.com:8080?region=%2A%2A%2A&session=%2A%2A%2A", masked)
+	assert.NotContains(t, masked, "secret")
+	assert.NotContains(t, masked, "sticky-user")
+	assert.NotContains(t, masked, "abc")
+}
+
+func TestEncryptBrowserProxyURLRequiresPersistentServerSecret(t *testing.T) {
+	originalCryptoSecret := common.CryptoSecret
+	t.Cleanup(func() {
+		common.CryptoSecret = originalCryptoSecret
+	})
+
+	t.Setenv("CRYPTO_SECRET", "")
+	t.Setenv("SESSION_SECRET", "")
+	common.CryptoSecret = "ephemeral-process-secret"
+	_, err := EncryptBrowserProxyURL("https://proxy.example.com:443")
+	assert.Error(t, err)
+
+	t.Setenv("CRYPTO_SECRET", "persistent-test-secret")
+	common.CryptoSecret = os.Getenv("CRYPTO_SECRET")
+	encrypted, err := EncryptBrowserProxyURL("https://proxy.example.com:443")
+	require.NoError(t, err)
+	assert.NotContains(t, encrypted, "proxy.example.com")
+}
+
+func TestBrowserAgentTokenDigestDoesNotDependOnProcessCryptoSecret(t *testing.T) {
+	originalCryptoSecret := common.CryptoSecret
+	t.Cleanup(func() {
+		common.CryptoSecret = originalCryptoSecret
+	})
+
+	common.CryptoSecret = "first-secret"
+	first := BrowserAgentTokenDigest("nba_example-token")
+	common.CryptoSecret = "second-secret"
+	second := BrowserAgentTokenDigest("nba_example-token")
+
+	assert.Equal(t, first, second)
+	assert.Len(t, first, 64)
+}

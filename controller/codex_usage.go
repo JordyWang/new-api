@@ -99,7 +99,12 @@ func fetchCodexChannelWhamData(
 		return
 	}
 
-	client, err := service.NewProxyHttpClient(ch.GetSetting().Proxy)
+	proxyURL, err := service.ResolveChannelProxyURL(ch)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	client, err := service.NewProxyHttpClient(proxyURL)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -119,10 +124,13 @@ func fetchCodexChannelWhamData(
 		refreshCtx, refreshCancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 		defer refreshCancel()
 
-		res, refreshErr := service.RefreshCodexOAuthTokenWithProxy(refreshCtx, oauthKey.RefreshToken, ch.GetSetting().Proxy)
+		res, refreshErr := service.RefreshCodexOAuthTokenWithProxy(refreshCtx, oauthKey.RefreshToken, proxyURL)
 		if refreshErr == nil {
 			oauthKey.AccessToken = res.AccessToken
 			oauthKey.RefreshToken = res.RefreshToken
+			if strings.TrimSpace(res.IDToken) != "" {
+				oauthKey.IDToken = res.IDToken
+			}
 			oauthKey.LastRefresh = time.Now().Format(time.RFC3339)
 			oauthKey.Expired = res.ExpiresAt.Format(time.RFC3339)
 			if strings.TrimSpace(oauthKey.Type) == "" {

@@ -170,8 +170,9 @@ import {
   collectInvalidStatusCodeEntries,
   collectNewDisallowedStatusCodeRedirects,
 } from '../../lib/status-code-risk-guard'
-import type { Channel } from '../../types'
+import type { Channel, CodexBrowserOAuthFlow } from '../../types'
 import { useChannels } from '../channels-provider'
+import { CodexBrowserOAuthCard } from '../codex-browser-oauth-card'
 import { AdvancedCustomEditorDialog } from '../dialogs/advanced-custom-editor-dialog'
 import { FetchModelsDialog } from '../dialogs/fetch-models-dialog'
 import {
@@ -268,6 +269,7 @@ const SENSITIVE_FORM_FIELDS = [
   'type',
   'base_url',
   'key',
+  'codex_oauth_flow_id',
   'openai_organization',
   'other',
   'key_mode',
@@ -283,6 +285,7 @@ const SENSITIVE_FORM_FIELDS = [
   'force_format',
   'thinking_to_content',
   'proxy',
+  'browser_proxy_id',
   'pass_through_body_enabled',
   'system_prompt',
   'system_prompt_override',
@@ -333,6 +336,7 @@ function hasAdvancedSettingsValues(values: ChannelFormValues): boolean {
     values.priority ||
     values.weight ||
     values.proxy?.trim() ||
+    values.browser_proxy_id ||
     values.system_prompt?.trim() ||
     values.force_format ||
     values.thinking_to_content ||
@@ -717,6 +721,7 @@ export function ChannelMutateDrawer({
   const currentStatus = form.watch('status')
   const currentBaseUrl = form.watch('base_url')
   const currentKey = form.watch('key')
+  const currentCodexOAuthFlowId = form.watch('codex_oauth_flow_id')
   const currentOther = form.watch('other')
   const currentModels = form.watch('models')
   const currentName = form.watch('name')
@@ -744,6 +749,7 @@ export function ChannelMutateDrawer({
     'disable_task_polling_sleep'
   )
   const currentProxy = form.watch('proxy')
+  const currentBrowserProxyId = form.watch('browser_proxy_id')
   const currentSystemPrompt = form.watch('system_prompt')
   const currentSystemPromptOverride = form.watch('system_prompt_override')
   const currentAllowServiceTier = form.watch('allow_service_tier')
@@ -941,6 +947,7 @@ export function ChannelMutateDrawer({
   )
   const credentialsHaveErrors = Boolean(
     formErrors.key ||
+    formErrors.codex_oauth_flow_id ||
     formErrors.base_url ||
     formErrors.other ||
     formErrors.multi_key_mode ||
@@ -959,7 +966,7 @@ export function ChannelMutateDrawer({
   const providerRequiresOther = [3, 18, 21, 39, 41, 49].includes(currentType)
   const identityComplete = Boolean(currentName?.trim() && currentType > 0)
   const credentialsComplete = Boolean(
-    (isEditing || currentKey?.trim()) &&
+    (isEditing || currentKey?.trim() || currentCodexOAuthFlowId?.trim()) &&
     (!providerRequiresBaseUrl || currentBaseUrl?.trim()) &&
     (!providerRequiresOther || currentOther?.trim())
   )
@@ -1009,6 +1016,7 @@ export function ChannelMutateDrawer({
     currentPassThroughBodyEnabled ||
     currentDisableTaskPollingSleep ||
     currentProxy?.trim() ||
+    currentBrowserProxyId ||
     currentSystemPrompt?.trim() ||
     currentSystemPromptOverride
   )
@@ -1293,6 +1301,16 @@ export function ChannelMutateDrawer({
     }
   }, [form, isEditing, multiKeyMode, supportsMultiKeyAddMode])
 
+  useEffect(() => {
+    if (currentType === 57) return
+    if (form.getValues('codex_oauth_flow_id')) {
+      form.setValue('codex_oauth_flow_id', '', { shouldValidate: true })
+    }
+    if (form.getValues('browser_proxy_id')) {
+      form.setValue('browser_proxy_id', 0, { shouldDirty: true })
+    }
+  }, [currentType, form])
+
   // Validate base_url - warn if it ends with /v1
   useEffect(() => {
     if (!currentBaseUrl || !currentBaseUrl.endsWith('/v1')) return
@@ -1394,6 +1412,41 @@ export function ChannelMutateDrawer({
       setIsCodexCredentialRefreshing(false)
     }
   }, [channelId, queryClient, t])
+
+  const handleCodexOAuthCompleted = useCallback(
+    (flow: CodexBrowserOAuthFlow) => {
+      form.setValue('browser_proxy_id', flow.proxy_id, {
+        shouldDirty: !isEditing,
+      })
+      form.setValue('proxy', '', { shouldDirty: !isEditing })
+      form.setValue('key', '', { shouldDirty: true, shouldValidate: true })
+      if (isEditing && channelId) {
+        void queryClient.invalidateQueries({
+          queryKey: channelsQueryKeys.detail(channelId),
+        })
+        void queryClient.invalidateQueries({
+          queryKey: channelsQueryKeys.lists(),
+        })
+        return
+      }
+      form.setValue('multi_key_mode', 'single', { shouldDirty: true })
+      form.setValue('codex_oauth_flow_id', flow.id, {
+        shouldDirty: true,
+        shouldValidate: true,
+      })
+    },
+    [channelId, form, isEditing, queryClient]
+  )
+
+  const handleCodexOAuthReset = useCallback(() => {
+    form.setValue('codex_oauth_flow_id', '', {
+      shouldDirty: true,
+      shouldValidate: true,
+    })
+    if (!isEditing) {
+      form.setValue('browser_proxy_id', 0, { shouldDirty: true })
+    }
+  }, [form, isEditing])
 
   // Unified function to update models
   const updateModels = useCallback(
@@ -1596,7 +1649,11 @@ export function ChannelMutateDrawer({
   const onSubmit = useCallback(
     async (data: ChannelFormValues) => {
       // Validate key is required when creating
-      if (!isEditing && !data.key?.trim()) {
+      if (
+        !isEditing &&
+        !data.key?.trim() &&
+        !(data.type === 57 && data.codex_oauth_flow_id?.trim())
+      ) {
         form.setError('key', {
           type: 'manual',
           message: ERROR_MESSAGES.REQUIRED_KEY,
@@ -2884,6 +2941,18 @@ export function ChannelMutateDrawer({
                                 />
                               )}
 
+                              {currentType === 57 && (
+                                <CodexBrowserOAuthCard
+                                  open={open}
+                                  channelId={channelId}
+                                  isEditing={isEditing}
+                                  disabled={sensitiveLocked}
+                                  flowId={currentCodexOAuthFlowId || ''}
+                                  onCompleted={handleCodexOAuthCompleted}
+                                  onFlowReset={handleCodexOAuthReset}
+                                />
+                              )}
+
                               <FormField
                                 control={form.control}
                                 name='key'
@@ -2958,17 +3027,31 @@ export function ChannelMutateDrawer({
                                   }
                                   return (
                                     <FormItem>
-                                      <FormLabel>{t('API Key *')}</FormLabel>
+                                      <FormLabel>
+                                        {currentType === 57
+                                          ? t('Manual credential JSON')
+                                          : t('API Key *')}
+                                      </FormLabel>
                                       <FormControl>
                                         <Textarea
                                           placeholder={keyPlaceholder}
-                                          rows={isBatchMode ? 8 : 4}
+                                          rows={
+                                            isBatchMode || currentType === 57
+                                              ? 8
+                                              : 4
+                                          }
                                           {...field}
                                         />
                                       </FormControl>
                                       <FormDescription>
                                         <div className='flex flex-col gap-2'>
-                                          <span>{keyDescription}</span>
+                                          <span>
+                                            {currentType === 57
+                                              ? t(
+                                                  'Compatibility fallback: paste a Codex OAuth credential JSON only when managed browser login is unavailable.'
+                                                )
+                                              : keyDescription}
+                                          </span>
                                           {isBatchMode && (
                                             <Button
                                               type='button'
@@ -4169,13 +4252,19 @@ export function ChannelMutateDrawer({
                                       placeholder={t(
                                         'socks5://user:pass@host:port'
                                       )}
+                                      disabled={Boolean(currentBrowserProxyId)}
                                       {...field}
                                     />
                                   </FormControl>
                                   <FormDescription>
-                                    {t(
-                                      'Network proxy for this channel (supports socks5 protocol)'
-                                    )}
+                                    {currentBrowserProxyId
+                                      ? t(
+                                          'Managed proxy #{{id}} is enforced for browser login, token requests, and relay traffic.',
+                                          { id: currentBrowserProxyId }
+                                        )
+                                      : t(
+                                          'Network proxy for this channel (supports socks5 protocol)'
+                                        )}
                                   </FormDescription>
                                   <FormMessage />
                                 </FormItem>

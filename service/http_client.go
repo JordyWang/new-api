@@ -178,7 +178,8 @@ func NewProxyHttpClient(proxyURL string) (*http.Client, error) {
 
 		// 创建 SOCKS5 代理拨号器
 		// proxy.SOCKS5 使用 tcp 参数，所有 TCP 连接包括 DNS 查询都将通过代理进行。行为与 socks5h 相同
-		dialer, err := proxy.SOCKS5("tcp", parsedURL.Host, auth, proxy.Direct)
+		forwardDialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+		dialer, err := proxy.SOCKS5("tcp", parsedURL.Host, auth, forwardDialer)
 		if err != nil {
 			return nil, err
 		}
@@ -188,9 +189,13 @@ func NewProxyHttpClient(proxyURL string) (*http.Client, error) {
 			MaxIdleConnsPerHost: common.RelayMaxIdleConnsPerHost,
 			IdleConnTimeout:     time.Duration(common.RelayIdleConnTimeout) * time.Second,
 			ForceAttemptHTTP2:   true,
-			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+		}
+		if contextDialer, ok := dialer.(proxy.ContextDialer); ok {
+			transport.DialContext = contextDialer.DialContext
+		} else {
+			transport.DialContext = func(_ context.Context, network, addr string) (net.Conn, error) {
 				return dialer.Dial(network, addr)
-			},
+			}
 		}
 		if common.TLSInsecureSkipVerify {
 			transport.TLSClientConfig = common.InsecureTLSConfig

@@ -23,12 +23,14 @@ import type {
   AddChannelRequest,
   BatchDeleteParams,
   BatchSetTagParams,
+  BrowserOAuthProfile,
   Channel,
   ChannelBalanceResponse,
   ChannelOpsResponse,
   ChannelTestResponse,
   CopyChannelParams,
   CopyChannelResponse,
+  CodexBrowserOAuthFlow,
   FetchModelsResponse,
   GetChannelResponse,
   GetChannelsParams,
@@ -67,10 +69,64 @@ export type CodexCredentialRefreshResponse = {
     last_refresh?: string
     account_id?: string
     email?: string
+    plan_type?: string
     channel_id?: number
     channel_type?: number
     channel_name?: string
   }
+}
+
+type BrowserOAuthResponse<T = undefined> = {
+  success: boolean
+  message?: string
+  data?: T
+}
+
+export async function getBrowserOAuthProfiles(): Promise<
+  BrowserOAuthResponse<BrowserOAuthProfile[]>
+> {
+  const res = await api.get<BrowserOAuthResponse<BrowserOAuthProfile[]>>(
+    '/api/browser-oauth/profiles',
+    { skipBusinessError: true, skipErrorHandler: true }
+  )
+  return res.data
+}
+
+export async function startCodexBrowserOAuth(input: {
+  profile_id: number
+  channel_id: number
+}): Promise<BrowserOAuthResponse<CodexBrowserOAuthFlow>> {
+  const res = await api.post<BrowserOAuthResponse<CodexBrowserOAuthFlow>>(
+    '/api/browser-oauth/codex',
+    input,
+    channelActionConfig()
+  )
+  return res.data
+}
+
+export async function getCodexBrowserOAuth(
+  flowId: string
+): Promise<BrowserOAuthResponse<CodexBrowserOAuthFlow>> {
+  const res = await api.get<BrowserOAuthResponse<CodexBrowserOAuthFlow>>(
+    `/api/browser-oauth/codex/${encodeURIComponent(flowId)}`,
+    {
+      skipBusinessError: true,
+      skipErrorHandler: true,
+      disableDuplicate: true,
+    }
+  )
+  return res.data
+}
+
+export async function cancelCodexBrowserOAuth(
+  flowId: string
+): Promise<BrowserOAuthResponse> {
+  const res = await api.post<BrowserOAuthResponse>(
+    `/api/browser-oauth/codex/${encodeURIComponent(flowId)}/cancel`,
+    undefined,
+    channelActionConfig()
+  )
+  return res.data
 }
 
 // ============================================================================

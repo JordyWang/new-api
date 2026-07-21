@@ -18,6 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import {
   Activity,
+  Bot,
   Box,
   CreditCard,
   FileText,
@@ -155,6 +156,12 @@ export function useSidebarData(): SidebarData {
             title: t('System Info'),
             url: '/system-info',
             icon: ServerCog,
+            requiredRole: ROLE.SUPER_ADMIN,
+          },
+          {
+            title: t('Browser Management'),
+            url: '/browser-management',
+            icon: Bot,
             requiredRole: ROLE.SUPER_ADMIN,
           },
           {
