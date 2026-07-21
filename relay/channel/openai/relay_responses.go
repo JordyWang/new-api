@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,6 +17,41 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+func processOpenAIResponsesResponse(c *gin.Context, info *relaycommon.RelayInfo, response *dto.OpenAIResponsesResponse) *dto.Usage {
+	usage := &dto.Usage{}
+	if response == nil {
+		return usage
+	}
+
+	if response.HasImageGenerationCall() {
+		c.Set("image_generation_call", true)
+		c.Set("image_generation_call_quality", response.GetQuality())
+		c.Set("image_generation_call_size", response.GetSize())
+	}
+
+	if response.Usage != nil {
+		usage.PromptTokens = response.Usage.InputTokens
+		usage.CompletionTokens = response.Usage.OutputTokens
+		usage.TotalTokens = response.Usage.TotalTokens
+		if response.Usage.InputTokensDetails != nil {
+			usage.PromptTokensDetails.CachedTokens = response.Usage.InputTokensDetails.CachedTokens
+			usage.PromptTokensDetails.CacheWriteTokens = response.Usage.InputTokensDetails.CacheWriteTokens
+		}
+	}
+	if info == nil || info.ResponsesUsageInfo == nil || info.ResponsesUsageInfo.BuiltInTools == nil {
+		return usage
+	}
+	for _, tool := range response.Tools {
+		builtInTool, ok := info.ResponsesUsageInfo.BuiltInTools[common.Interface2String(tool["type"])]
+		if !ok || builtInTool == nil {
+			logger.LogError(c, fmt.Sprintf("BuiltInTools not found for tool type: %v", tool["type"]))
+			continue
+		}
+		builtInTool.CallCount++
+	}
+	return usage
+}
 
 func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
 	defer service.CloseResponseBodyGracefully(resp)
@@ -34,39 +70,76 @@ func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
 	}
 
-	if responsesResponse.HasImageGenerationCall() {
-		c.Set("image_generation_call", true)
-		c.Set("image_generation_call_quality", responsesResponse.GetQuality())
-		c.Set("image_generation_call_size", responsesResponse.GetSize())
-	}
-
 	// 写入新的 response body
 	service.IOCopyBytesGracefully(c, resp, responseBody)
+	return processOpenAIResponsesResponse(c, info, &responsesResponse), nil
+}
 
-	// compute usage
-	usage := dto.Usage{}
-	if responsesResponse.Usage != nil {
-		usage.PromptTokens = responsesResponse.Usage.InputTokens
-		usage.CompletionTokens = responsesResponse.Usage.OutputTokens
-		usage.TotalTokens = responsesResponse.Usage.TotalTokens
-		if responsesResponse.Usage.InputTokensDetails != nil {
-			usage.PromptTokensDetails.CachedTokens = responsesResponse.Usage.InputTokensDetails.CachedTokens
-			usage.PromptTokensDetails.CacheWriteTokens = responsesResponse.Usage.InputTokensDetails.CacheWriteTokens
-		}
+// OaiResponsesStreamToNonStreamHandler consumes an upstream Responses SSE
+// stream and returns the final response object as a regular JSON response. It
+// is used by stream-only upstreams when the downstream client requested a
+// non-streaming response.
+func OaiResponsesStreamToNonStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
+	if resp == nil || resp.Body == nil {
+		return nil, types.NewError(fmt.Errorf("invalid response"), types.ErrorCodeBadResponse)
 	}
-	if info == nil || info.ResponsesUsageInfo == nil || info.ResponsesUsageInfo.BuiltInTools == nil {
-		return &usage, nil
+	defer service.CloseResponseBodyGracefully(resp)
+
+	type responsesStreamEnvelope struct {
+		Type     string             `json:"type"`
+		Response json.RawMessage    `json:"response,omitempty"`
+		Error    *types.OpenAIError `json:"error,omitempty"`
 	}
-	// 解析 Tools 用量
-	for _, tool := range responsesResponse.Tools {
-		buildToolinfo, ok := info.ResponsesUsageInfo.BuiltInTools[common.Interface2String(tool["type"])]
-		if !ok || buildToolinfo == nil {
-			logger.LogError(c, fmt.Sprintf("BuiltInTools not found for tool type: %v", tool["type"]))
+
+	var finalResponse json.RawMessage
+	scanner := helper.NewStreamScanner(resp.Body)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if !strings.HasPrefix(line, "data:") {
 			continue
 		}
-		buildToolinfo.CallCount++
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "" {
+			continue
+		}
+		if data == "[DONE]" {
+			break
+		}
+
+		var event responsesStreamEnvelope
+		if err := common.Unmarshal([]byte(data), &event); err != nil {
+			return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusBadGateway)
+		}
+		if event.Error != nil && event.Error.Message != "" {
+			return nil, types.WithOpenAIError(*event.Error, http.StatusBadGateway)
+		}
+		switch event.Type {
+		case "response.completed", "response.failed", "response.incomplete":
+			if len(event.Response) > 0 {
+				finalResponse = append(finalResponse[:0], event.Response...)
+			}
+		}
 	}
-	return &usage, nil
+	if err := scanner.Err(); err != nil {
+		return nil, types.NewOpenAIError(err, types.ErrorCodeReadResponseBodyFailed, http.StatusBadGateway)
+	}
+	if len(finalResponse) == 0 {
+		return nil, types.NewOpenAIError(fmt.Errorf("upstream stream ended without a final response"), types.ErrorCodeEmptyResponse, http.StatusBadGateway)
+	}
+
+	var responsesResponse dto.OpenAIResponsesResponse
+	if err := common.Unmarshal(finalResponse, &responsesResponse); err != nil {
+		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusBadGateway)
+	}
+	if oaiError := responsesResponse.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
+		return nil, types.WithOpenAIError(*oaiError, http.StatusBadGateway)
+	}
+
+	downstreamResponse := *resp
+	downstreamResponse.Header = resp.Header.Clone()
+	downstreamResponse.Header.Set("Content-Type", "application/json")
+	service.IOCopyBytesGracefully(c, &downstreamResponse, finalResponse)
+	return processOpenAIResponsesResponse(c, info, &responsesResponse), nil
 }
 
 func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {

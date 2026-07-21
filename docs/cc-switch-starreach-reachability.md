@@ -5,7 +5,7 @@
 - 调查日期：2026-07-21
 - 调查对象：`https://starreach.xyz/v1`
 - 对比对象：`https://prod-ai-gateway.timeresearch.biz:4000/v1`
-- 状态：根因已确认，本文不包含代码或部署变更
+- 状态：根因已确认；Responses 兼容层已在本地代码实现并验收，尚未据此断言生产环境已部署
 
 ## 摘要
 
@@ -17,7 +17,7 @@ Starreach 的 Base URL 是 `https://starreach.xyz/v1`。new-api 没有注册 `GE
 
 - `GET /v1` 返回 404 不影响 Codex 当前使用的流式 `POST /v1/responses`。
 - CC Switch 的绿色状态只能证明地址可连接，不能证明鉴权、模型、请求格式或真实推理链路可用。
-- Starreach 确实存在 Responses API 兼容性缺口：字符串 `input` 和非流式请求目前都会返回 400。
+- 调查时的生产版本存在 Responses API 兼容性缺口：字符串 `input` 和非流式请求会返回 400；当前代码已增加 Codex 渠道兼容层，生产环境需部署后才会生效。
 - 当前 `/healthz` 和 `/readyz` 虽然返回 200，但内容是前端 HTML，并不是真实健康检查。
 
 ## 原始现象
@@ -106,9 +106,9 @@ CC Switch GET https://starreach.xyz/v1
   -> Reachable / success=true / http_status=404
 ```
 
-## 真实接口验证
+## 修复前的真实接口验证
 
-使用 CC Switch 已保存的 Starreach provider 配置进行了脱敏请求验证。测试没有记录或输出访问令牌。
+使用 CC Switch 已保存的 Starreach provider 配置进行了脱敏请求验证。测试没有记录或输出访问令牌。本节记录的是兼容修复前的生产基线，不能用于判断当前代码或后续部署版本的行为。
 
 ### HTTP 路由与错误语义
 
@@ -145,13 +145,13 @@ response.output_item.done
 response.completed
 ```
 
-因此，Starreach 当前可满足 Codex CLI 使用的数组输入和流式请求，但不满足完整的 OpenAI Responses API 请求契约。
+因此，调查时的生产版本可满足 Codex CLI 使用的数组输入和流式请求，但不满足完整的 OpenAI Responses API 请求契约。
 
-## Responses API 兼容性缺口
+## 根因与兼容层实现
 
 new-api 的请求 DTO 将 `input` 保存为原始 JSON，并将 `stream` 定义为可选布尔值，省略时按 `false` 处理，见 [`dto/openai_request.go`](../dto/openai_request.go#L839-L869) 和 [`dto/openai_request.go`](../dto/openai_request.go#L947-L949)。
 
-Codex 渠道适配器会补充 `instructions`、强制 `store=false` 并删除部分字段，但不会把字符串 `input` 转换成数组，也不会为非流式客户端聚合上游 SSE。随后请求被转发到 Codex 上游的 `/backend-api/codex/responses`，见 [`relay/channel/codex/adaptor.go`](../relay/channel/codex/adaptor.go#L55-L107) 和 [`relay/channel/codex/adaptor.go`](../relay/channel/codex/adaptor.go#L137-L145)。
+修复前，Codex 渠道适配器只会补充 `instructions`、强制 `store=false` 并删除部分字段，不会把字符串 `input` 转换成数组，也不会为非流式客户端聚合上游 SSE。随后请求被转发到 Codex 上游的 `/backend-api/codex/responses`，因此上游的两项限制直接暴露给了客户端。
 
 实测得到的两个错误字符串不在 new-api 或 CC Switch 源码中。结合适配器的原样转发行为，可以确认它们是 Codex 上游约束经网关透传后的结果，而不是 Starreach 路由层主动实施的校验。
 
@@ -166,7 +166,31 @@ Codex 渠道适配器会补充 `instructions`、强制 `store=false` 并删除�
 - [OpenAI Create response API](https://developers.openai.com/api/reference/resources/responses/methods/create)
 - [OpenAI Streaming API responses](https://developers.openai.com/api/docs/guides/streaming-responses)
 
-如果 Starreach 对外声明为完整的 OpenAI-compatible Responses API，这两个限制应视为兼容性缺陷；如果产品定位仅为 Codex CLI 转发，则应在文档中明确声明该子集约束。
+当前代码在 Codex 渠道边界增加了兼容处理：
+
+1. 字符串 `input` 被规范化为包含 `input_text` 的用户消息数组；客户端原本提供的数组保持不变。
+2. 普通 `/v1/responses` 请求转发上游时始终使用 `stream=true`，并显式请求 `text/event-stream`。
+3. 流式客户端继续收到 SSE；非流式客户端由网关消费上游 SSE，从 `response.completed` 中取出完整 Response，并返回 `application/json`。
+4. 聚合路径继续提取 usage、图片生成标记和内置工具信息，供计费与日志链路使用。
+5. `/v1/responses/compact` 保持原有请求与响应语义，不强制切换为流式。
+
+实现见 [`relay/channel/codex/adaptor.go`](../relay/channel/codex/adaptor.go) 和 [`relay/channel/openai/relay_responses.go`](../relay/channel/openai/relay_responses.go)。这层转换只解决 Responses API 契约差异，不会改变 `GET /v1` 的路由结果。
+
+## 本地兼容修复验收
+
+本地 new-api 连接了一个严格模拟 Codex 的上游。该模拟上游只接受数组 `input` 和 `stream=true`，其他请求直接返回与现场相同的 400。通过本地 API Token 访问 `/v1/responses` 的结果如下：
+
+| 客户端 `input` | 客户端 `stream` | 上游实际收到 | 下游结果 |
+| --- | --- | --- | --- |
+| 字符串 | 省略 | 数组、`true` | 200 JSON |
+| 字符串 | `false` | 数组、`true` | 200 JSON |
+| 数组 | `false` | 数组、`true` | 200 JSON |
+| 字符串 | `true` | 数组、`true` | 200 SSE |
+| 数组 | `true` | 数组、`true` | 200 SSE |
+
+非流式响应保留了 `id`、`object`、`status`、`model`、`output` 和 usage，响应类型为 `application/json`；流式响应保持 `text/event-stream` 和 `response.completed` 事件。管理端 `/api/channel/test/:id` 同样成功。
+
+这项调整与既有的 Codex 通道测试强制流式逻辑不冲突：通道测试的客户端语义本来就是流式，因此继续走 SSE 透传；普通客户端请求为非流式时，才走新增的 SSE 到 JSON 聚合路径。
 
 ## 健康检查路由现状
 
@@ -183,13 +207,13 @@ Codex 渠道适配器会补充 `instructions`、强制 `store=false` 并删除�
 
 建议为这些路径注册显式路由，并保证它们先于 SPA fallback 生效。
 
-## 建议方案
+## 实施状态与后续建议
 
-### P0：完善 Responses API 兼容性
+### 已实现：完善 Responses API 兼容性
 
 #### 支持字符串 `input`
 
-当 Codex 渠道收到字符串输入时，在转发上游前将其规范化为上游接受的数组形式。例如：
+Codex 渠道收到字符串输入时，会在转发上游前将其规范化为上游接受的数组形式。例如：
 
 ```json
 {
@@ -219,14 +243,14 @@ Codex 渠道适配器会补充 `instructions`、强制 `store=false` 并删除�
 
 #### 支持非流式请求
 
-Codex 上游要求 `stream=true`。为了维持客户端的标准契约，网关需要：
+Codex 上游要求 `stream=true`。为了维持客户端的标准契约，网关已经实现：
 
 1. 对上游请求强制使用流式模式。
 2. 在服务端消费并校验完整 SSE 事件流。
 3. 聚合 `response.completed`、输出项、用量及错误信息。
 4. 向非流式客户端返回标准 JSON Response。
 
-不能只把请求体改成 `stream=true` 后直接把 SSE 返回给客户端，否则会违反客户端请求的非流式响应契约。
+实现没有把上游 SSE 直接返回给非流式客户端；否则会违反客户端请求的非流式响应契约。
 
 ### P0：增加真实健康检查
 
@@ -296,19 +320,24 @@ HEAD /v1 -> 200
 
 Gin 默认不会自动把已知路径上的错误方法转换为 405。实现时可以评估启用统一的 Method Not Allowed 处理，或为关键 API 增加显式方法处理器，同时验证 CORS、OPTIONS、鉴权中间件和现有 NoRoute 行为不受影响。
 
-## 验收标准
+## 验收状态
 
-完成优化后至少应覆盖以下回归验证：
+本次 Responses 兼容修复已覆盖：
+
+1. 字符串和数组两种 `input`。
+2. 省略 `stream`、显式 `stream=false` 和 `stream=true`。
+3. 非流式 SSE 聚合后的输出、usage、模型、状态和 JSON Content-Type。
+4. 流式 SSE 透传及 Codex 管理端通道测试。
+5. `/v1/responses/compact` 不受普通 Responses 强制流式逻辑影响。
+
+网页路由优化尚未实施，后续验收仍需覆盖：
 
 1. `GET` 和 `HEAD /healthz` 返回 200，Content-Type 为 JSON 或 HEAD 的预期空响应，不再返回 HTML。
 2. readiness 正常时 `/readyz` 返回 200，必要依赖不可用时返回 503。
 3. `GET` 和 `HEAD /v1` 返回最小公开服务信息，不包含敏感配置。
-4. 字符串和数组两种 `input` 均能完成 Responses 请求。
-5. 省略 `stream`、显式 `stream=false` 和 `stream=true` 均符合官方响应契约。
-6. 非流式聚合正确保留输出、usage、模型、状态和错误。
-7. `GET /v1/responses` 返回 405，未知 `/v1/*` 仍返回 404。
-8. 缺少 token 仍返回 401，无可用模型渠道仍返回 503。
-9. CC Switch 探测 `/v1` 时记录 `success=true` 且 `http_status=200`。
+4. `GET /v1/responses` 返回 405，未知 `/v1/*` 仍返回 404。
+5. 缺少 token 仍返回 401，无可用模型渠道仍返回 503。
+6. CC Switch 探测 `/v1` 时记录 `success=true` 且 `http_status=200`。
 
 ## 调查限制
 
@@ -318,6 +347,6 @@ Gin 默认不会自动把已知路径上的错误方法转换为 405。实现时
 
 ## 最终结论
 
-Starreach 的 404 是裸 `GET /v1` 路由缺失造成的，它不影响当前 Codex 使用的数组输入、流式 `POST /v1/responses`。CC Switch 将该请求记录为成功，是因为其测试目标是 HTTP 可达性，而不是完整 API 功能。
+Starreach 的 404 是裸 `GET /v1` 路由缺失造成的。CC Switch 将该请求记录为成功，是因为其测试目标是 HTTP 可达性，而不是完整 API 功能；本次 Responses 兼容修复不会、也不需要改变这一判断。
 
-建议实施优化，但优先级应区分：Responses API 的字符串输入和非流式兼容性属于真实功能缺口；显式 `/healthz` 和 `/readyz` 可消除当前 SPA 200 假健康；`GET /v1` 主要改善 CC Switch 原始状态码、通用监控和人工排障体验。
+调查时确认的字符串输入和非流式兼容性缺口已在当前代码中修复并完成本地验收，生产行为仍以实际部署版本为准。网页路由属于独立后续项：显式 `/healthz` 和 `/readyz` 可消除 SPA 200 假健康，`GET /v1` 则主要改善 CC Switch 原始状态码、通用监控和人工排障体验。

@@ -99,6 +99,27 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 	if isCompact {
 		return request, nil
 	}
+	if common.GetJsonType(request.Input) == "string" {
+		var input string
+		if err := common.Unmarshal(request.Input, &input); err != nil {
+			return nil, err
+		}
+		inputMessages, err := common.Marshal([]struct {
+			Role    string           `json:"role"`
+			Content []dto.MediaInput `json:"content"`
+		}{{
+			Role: "user",
+			Content: []dto.MediaInput{
+				{Type: "input_text", Text: input},
+			},
+		}})
+		if err != nil {
+			return nil, err
+		}
+		request.Input = inputMessages
+	}
+	stream := true
+	request.Stream = &stream
 	// codex: store must be false
 	request.Store = json.RawMessage("false")
 	// rm max_output_tokens
@@ -123,7 +144,7 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 	if info.IsStream {
 		return openai.OaiResponsesStreamHandler(c, info, resp)
 	}
-	return openai.OaiResponsesHandler(c, info, resp)
+	return openai.OaiResponsesStreamToNonStreamHandler(c, info, resp)
 }
 
 func (a *Adaptor) GetModelList() []string {
@@ -182,7 +203,7 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Header, info *rel
 	// Clients may omit it or include parameters like `application/json; charset=utf-8`,
 	// which can be rejected by the upstream. Force the exact media type.
 	req.Set("Content-Type", "application/json")
-	if info.IsStream {
+	if info.RelayMode == relayconstant.RelayModeResponses {
 		req.Set("Accept", "text/event-stream")
 	} else if req.Get("Accept") == "" {
 		req.Set("Accept", "application/json")
