@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/browserproxy"
 )
@@ -106,6 +107,11 @@ func ResolveChannelProxyURL(channel *model.Channel) (string, error) {
 		return "", errors.New("channel is nil")
 	}
 	setting := channel.GetSetting()
+	if channel.Type == constant.ChannelTypeCodex {
+		if oauthKey, err := parseCodexOAuthKey(strings.TrimSpace(channel.Key)); err == nil && oauthKey.ManagedProxyID > 0 && setting.BrowserProxyId != oauthKey.ManagedProxyID {
+			return "", fmt.Errorf("Codex credential requires managed browser proxy %d", oauthKey.ManagedProxyID)
+		}
+	}
 	if setting.BrowserProxyId > 0 {
 		return ResolveBrowserProxyURL(setting.BrowserProxyId)
 	}

@@ -8,6 +8,8 @@ const (
 	FlowStatusFailed    = "failed"
 	FlowStatusCanceled  = "canceled"
 	FlowStatusExpired   = "expired"
+
+	CapabilityStrictProxyGeoV1 = "strict_proxy_geo_v1"
 )
 
 type CodexOAuthClaim struct {

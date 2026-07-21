@@ -6,6 +6,9 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/model"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -93,4 +96,37 @@ func TestBrowserAgentTokenDigestDoesNotDependOnProcessCryptoSecret(t *testing.T)
 
 	assert.Equal(t, first, second)
 	assert.Len(t, first, 64)
+}
+
+func TestResolveChannelProxyURLRejectsManagedCredentialProxyBypass(t *testing.T) {
+	keyBytes, err := common.Marshal(CodexOAuthKey{
+		AccessToken:    "access-token",
+		RefreshToken:   "refresh-token",
+		ManagedProxyID: 42,
+	})
+	require.NoError(t, err)
+
+	for _, setting := range []dto.ChannelSettings{
+		{Proxy: "https://fallback-proxy.example.com:443"},
+		{BrowserProxyId: 41, Proxy: "https://fallback-proxy.example.com:443"},
+	} {
+		settingBytes, err := common.Marshal(setting)
+		require.NoError(t, err)
+		settingJSON := string(settingBytes)
+		channel := &model.Channel{
+			Type:    constant.ChannelTypeCodex,
+			Key:     string(keyBytes),
+			Setting: &settingJSON,
+		}
+
+		_, err = ResolveChannelProxyURL(channel)
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "managed browser proxy 42")
+	}
+}
+
+func TestParseCodexOAuthKeyPreservesManagedProxyBinding(t *testing.T) {
+	key, err := parseCodexOAuthKey(`{"access_token":"token","managed_proxy_id":42}`)
+	require.NoError(t, err)
+	assert.Equal(t, 42, key.ManagedProxyID)
 }

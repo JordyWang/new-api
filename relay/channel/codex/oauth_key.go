@@ -11,12 +11,13 @@ type OAuthKey struct {
 	AccessToken  string `json:"access_token,omitempty"`
 	RefreshToken string `json:"refresh_token,omitempty"`
 
-	AccountID   string `json:"account_id,omitempty"`
-	LastRefresh string `json:"last_refresh,omitempty"`
-	Email       string `json:"email,omitempty"`
-	PlanType    string `json:"plan_type,omitempty"`
-	Type        string `json:"type,omitempty"`
-	Expired     string `json:"expired,omitempty"`
+	AccountID      string `json:"account_id,omitempty"`
+	LastRefresh    string `json:"last_refresh,omitempty"`
+	Email          string `json:"email,omitempty"`
+	PlanType       string `json:"plan_type,omitempty"`
+	Type           string `json:"type,omitempty"`
+	Expired        string `json:"expired,omitempty"`
+	ManagedProxyID int    `json:"managed_proxy_id,omitempty"`
 }
 
 func ParseOAuthKey(raw string) (*OAuthKey, error) {

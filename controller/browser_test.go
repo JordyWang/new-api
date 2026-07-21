@@ -33,3 +33,28 @@ func TestFingerprintEnvironmentRejectsEncodedPayloadOverLimit(t *testing.T) {
 	_, err = normalizeStringMap(string(encoded), "fingerprint environment")
 	assert.Error(t, err)
 }
+
+func TestBrowserFingerprintRequiresValidLocaleAndTimezone(t *testing.T) {
+	request := browserFingerprintRequest{
+		Name:        "managed",
+		Locale:      "en-US",
+		Timezone:    "America/Los_Angeles",
+		ViewportW:   1280,
+		ViewportH:   800,
+		Payload:     `{}`,
+		LaunchArgs:  `[]`,
+		Environment: `{}`,
+	}
+
+	_, err := normalizeBrowserFingerprintRequest(request, nil)
+	require.NoError(t, err)
+
+	request.Locale = "not_a_locale!"
+	_, err = normalizeBrowserFingerprintRequest(request, nil)
+	assert.ErrorContains(t, err, "locale")
+
+	request.Locale = "en-US"
+	request.Timezone = "Mars/Olympus"
+	_, err = normalizeBrowserFingerprintRequest(request, nil)
+	assert.ErrorContains(t, err, "timezone")
+}

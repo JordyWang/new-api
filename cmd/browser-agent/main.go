@@ -61,6 +61,7 @@ type agentConfig struct {
 	ServerURL    string
 	Token        string
 	ProfileRoot  string
+	GeoIPURL     string
 	PollInterval time.Duration
 	Runtimes     map[string]string
 }
@@ -141,9 +142,14 @@ func main() {
 
 func parseAgentConfig() (agentConfig, error) {
 	runtimes := runtimeMapFlag{}
+	geoIPDefault := strings.TrimSpace(os.Getenv("NEW_API_BROWSER_GEOIP_URL"))
+	if geoIPDefault == "" {
+		geoIPDefault = defaultBrowserGeoIPURL
+	}
 	serverURL := flag.String("server", strings.TrimSpace(os.Getenv("NEW_API_BROWSER_AGENT_SERVER")), "new-api server URL")
 	token := flag.String("token", strings.TrimSpace(os.Getenv("NEW_API_BROWSER_AGENT_TOKEN")), "browser agent token")
 	profileRoot := flag.String("profile-root", strings.TrimSpace(os.Getenv("NEW_API_BROWSER_PROFILE_ROOT")), "managed Chromium profile root")
+	geoIPURL := flag.String("geoip-url", geoIPDefault, "HTTPS GeoIP endpoint queried through the managed proxy")
 	pollInterval := flag.Duration("poll-interval", 2*time.Second, "OAuth claim polling interval")
 	flag.Var(runtimes, "runtime", "local runtime mapping: key=/absolute/path/to/chrome (repeatable)")
 	flag.Parse()
@@ -180,6 +186,10 @@ func parseAgentConfig() (agentConfig, error) {
 	if *pollInterval < 500*time.Millisecond || *pollInterval > 30*time.Second {
 		return agentConfig{}, errors.New("poll interval must be between 500ms and 30s")
 	}
+	normalizedGeoIPURL, err := validateGeoIPURL(*geoIPURL)
+	if err != nil {
+		return agentConfig{}, err
+	}
 
 	root := strings.TrimSpace(*profileRoot)
 	if root == "" {
@@ -197,6 +207,7 @@ func parseAgentConfig() (agentConfig, error) {
 		ServerURL:    parsedServer.String(),
 		Token:        strings.TrimSpace(*token),
 		ProfileRoot:  root,
+		GeoIPURL:     normalizedGeoIPURL,
 		PollInterval: *pollInterval,
 		Runtimes:     map[string]string(runtimes),
 	}, nil
@@ -263,6 +274,9 @@ func (client *agentClient) heartbeat(ctx context.Context, instanceId string, run
 		Runtimes:   keys,
 		Metadata: map[string]any{
 			"hostname": hostname,
+			"capabilities": []string{
+				browseragentapi.CapabilityStrictProxyGeoV1,
+			},
 		},
 	}
 	var response apiEnvelope[map[string]any]

@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	_ "time/tzdata"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/middleware"
@@ -16,6 +17,7 @@ import (
 	"github.com/QuantumNous/new-api/service"
 
 	"github.com/gin-gonic/gin"
+	"golang.org/x/text/language"
 )
 
 var browserRuntimeKeyPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
@@ -875,12 +877,20 @@ func normalizeBrowserFingerprintRequest(request browserFingerprintRequest, exist
 	if len(locale) > 64 || strings.ContainsRune(locale, '\x00') {
 		return nil, errors.New("browser locale is invalid")
 	}
+	localeTag, err := language.Parse(locale)
+	if err != nil {
+		return nil, errors.New("browser locale must be a valid BCP 47 language tag")
+	}
+	locale = localeTag.String()
 	timezone := strings.TrimSpace(request.Timezone)
 	if timezone == "" {
 		timezone = "UTC"
 	}
 	if len(timezone) > 128 || strings.ContainsRune(timezone, '\x00') {
 		return nil, errors.New("browser timezone is invalid")
+	}
+	if _, err := time.LoadLocation(timezone); err != nil {
+		return nil, errors.New("browser timezone must be a valid IANA timezone")
 	}
 	userAgent := strings.TrimSpace(request.UserAgent)
 	if len(userAgent) > 4096 || strings.ContainsRune(userAgent, '\x00') {

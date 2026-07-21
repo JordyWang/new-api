@@ -450,8 +450,14 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	common.SetContextKey(c, constant.ContextKeyChannelType, channel.Type)
 	common.SetContextKey(c, constant.ContextKeyChannelCreateTime, channel.CreatedTime)
 	channelSetting := channel.GetSetting()
-	if channelSetting.BrowserProxyId > 0 {
-		proxyURL, err := service.ResolveBrowserProxyURL(channelSetting.BrowserProxyId)
+	if channelSetting.BrowserProxyId > 0 || channel.Type == constant.ChannelTypeCodex {
+		var proxyURL string
+		var err error
+		if channel.Type == constant.ChannelTypeCodex {
+			proxyURL, err = service.ResolveChannelProxyURL(channel)
+		} else {
+			proxyURL, err = service.ResolveBrowserProxyURL(channelSetting.BrowserProxyId)
+		}
 		if err != nil {
 			return types.NewError(fmt.Errorf("resolve managed browser proxy failed: %w", err), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
 		}

@@ -68,6 +68,9 @@ func StartCodexBrowserOAuthFlow(userId int, channelId int, profileId int) (*Code
 	if !agent.Enabled {
 		return nil, errors.New("browser agent is disabled")
 	}
+	if !browserAgentHasCapability(agent.Metadata, browseragentapi.CapabilityStrictProxyGeoV1) {
+		return nil, errors.New("browser agent does not enforce strict proxy geography; upgrade and restart the agent")
+	}
 	now := time.Now().Unix()
 	if agent.LastSeenAt < now-int64(browserAgentOnlineWindow/time.Second) {
 		return nil, errors.New("browser agent is offline")
@@ -184,6 +187,16 @@ func ClaimCodexBrowserOAuthFlow(agentId int, instanceId string) (*CodexBrowserOA
 	if err != nil {
 		return nil, err
 	}
+	agent, err := model.GetBrowserAgentById(agentId)
+	if err != nil {
+		_ = model.FailCodexOAuthFlow(agentId, instanceId, flow.Id, "failed to verify browser agent capabilities", now)
+		return nil, err
+	}
+	if !browserAgentHasCapability(agent.Metadata, browseragentapi.CapabilityStrictProxyGeoV1) {
+		err := errors.New("browser agent does not enforce strict proxy geography")
+		_ = model.FailCodexOAuthFlow(agentId, instanceId, flow.Id, err.Error(), now)
+		return nil, err
+	}
 	claim, err := buildCodexBrowserOAuthClaim(flow)
 	if err != nil {
 		_ = model.FailCodexOAuthFlow(agentId, instanceId, flow.Id, "failed to load managed browser configuration", now)
@@ -298,15 +311,16 @@ func CompleteCodexBrowserOAuthFlow(agentId int, instanceId string, flowId string
 	now := time.Now()
 	credentialExpiresAt := now.Add(time.Duration(completion.ExpiresIn) * time.Second)
 	key := CodexOAuthKey{
-		IDToken:      strings.TrimSpace(completion.IDToken),
-		AccessToken:  strings.TrimSpace(completion.AccessToken),
-		RefreshToken: strings.TrimSpace(completion.RefreshToken),
-		AccountID:    accountId,
-		LastRefresh:  now.Format(time.RFC3339),
-		Email:        email,
-		PlanType:     planType,
-		Type:         "codex",
-		Expired:      credentialExpiresAt.Format(time.RFC3339),
+		IDToken:        strings.TrimSpace(completion.IDToken),
+		AccessToken:    strings.TrimSpace(completion.AccessToken),
+		RefreshToken:   strings.TrimSpace(completion.RefreshToken),
+		AccountID:      accountId,
+		LastRefresh:    now.Format(time.RFC3339),
+		Email:          email,
+		PlanType:       planType,
+		Type:           "codex",
+		Expired:        credentialExpiresAt.Format(time.RFC3339),
+		ManagedProxyID: flow.ProxyId,
 	}
 	encoded, err := common.Marshal(key)
 	if err != nil {
@@ -415,4 +429,19 @@ func codexBrowserOAuthFlowView(flow *model.CodexOAuthFlow, profile *model.Browse
 
 func codexOAuthFlowSecretContext(flowId string, field string) string {
 	return "codex-oauth-flow:" + flowId + ":" + field
+}
+
+func browserAgentHasCapability(metadataJSON string, capability string) bool {
+	var metadata struct {
+		Capabilities []string `json:"capabilities"`
+	}
+	if err := common.UnmarshalJsonStr(metadataJSON, &metadata); err != nil {
+		return false
+	}
+	for _, advertised := range metadata.Capabilities {
+		if advertised == capability {
+			return true
+		}
+	}
+	return false
 }

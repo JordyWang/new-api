@@ -9,6 +9,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/pkg/browseragentapi"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -77,4 +78,15 @@ func TestCodexBrowserOAuthFlowViewSeparatesFlowAndCredentialExpiry(t *testing.T)
 	assert.Equal(t, flow.CredentialExpiresAt, view.CredentialExpiresAt)
 	assert.Equal(t, flow.ExpiresAt, view.ExpiresAt)
 	assert.NotEqual(t, view.ExpiresAt, view.CredentialExpiresAt)
+}
+
+func TestBrowserAgentStrictProxyGeoCapability(t *testing.T) {
+	metadata, err := common.Marshal(map[string]any{
+		"capabilities": []string{browseragentapi.CapabilityStrictProxyGeoV1},
+	})
+	require.NoError(t, err)
+
+	assert.True(t, browserAgentHasCapability(string(metadata), browseragentapi.CapabilityStrictProxyGeoV1))
+	assert.False(t, browserAgentHasCapability(`{"capabilities":[]}`, browseragentapi.CapabilityStrictProxyGeoV1))
+	assert.False(t, browserAgentHasCapability(`not-json`, browseragentapi.CapabilityStrictProxyGeoV1))
 }
