@@ -39,22 +39,6 @@ export type UpdateOptionResponse = {
   message: string
 }
 
-export type RegistrationInviteCode = {
-  id: number
-  code: string
-  group: string
-  expired_time: number
-  initial_quota: number
-  max_registrations: number
-  registered_count: number
-}
-
-export type RegistrationInviteCodeResponse = {
-  success: boolean
-  message: string
-  data?: RegistrationInviteCode
-}
-
 export type ConfirmPaymentComplianceResponse = {
   success: boolean
   message: string

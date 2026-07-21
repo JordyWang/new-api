@@ -21,7 +21,7 @@ import React, { lazy, Suspense, useContext, useMemo } from 'react';
 import { Route, Routes, useLocation, useParams } from 'react-router-dom';
 import Loading from './components/common/ui/Loading';
 import User from './pages/User';
-import { AuthRedirect, PrivateRoute, AdminRoute } from './helpers';
+import { AuthRedirect, PrivateRoute, AdminRoute, RootRoute } from './helpers';
 import RegisterForm from './components/auth/RegisterForm';
 import LoginForm from './components/auth/LoginForm';
 import NotFound from './pages/NotFound';
@@ -34,6 +34,7 @@ import PasswordResetConfirm from './components/auth/PasswordResetConfirm';
 import Channel from './pages/Channel';
 import Token from './pages/Token';
 import Redemption from './pages/Redemption';
+import RegistrationInviteCodes from './pages/RegistrationInviteCodes';
 import TopUp from './pages/TopUp';
 import Log from './pages/Log';
 import Chat from './pages/Chat';
@@ -161,6 +162,14 @@ function App() {
             <AdminRoute>
               <Redemption />
             </AdminRoute>
+          }
+        />
+        <Route
+          path='/console/registration-invite-codes'
+          element={
+            <RootRoute>
+              <RegistrationInviteCodes />
+            </RootRoute>
           }
         />
         <Route

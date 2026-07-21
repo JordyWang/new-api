@@ -35,6 +35,7 @@ const routerMap = {
   channel: '/console/channel',
   token: '/console/token',
   redemption: '/console/redemption',
+  registration_invite: '/console/registration-invite-codes',
   topup: '/console/topup',
   user: '/console/user',
   subscription: '/console/subscription',
@@ -176,6 +177,12 @@ const SiderBar = ({ onNavigate = () => {} }) => {
         itemKey: 'redemption',
         to: '/redemption',
         className: isAdmin() ? '' : 'tableHiddle',
+      },
+      {
+        text: t('邀请码管理'),
+        itemKey: 'registration_invite',
+        to: '/registration-invite-codes',
+        className: isRoot() ? '' : 'tableHiddle',
       },
       {
         text: t('用户管理'),

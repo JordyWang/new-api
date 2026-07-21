@@ -22,8 +22,6 @@ import type {
   ConfirmPaymentComplianceResponse,
   FetchUpstreamRatiosRequest,
   LogCleanupTask,
-  RegistrationInviteCode,
-  RegistrationInviteCodeResponse,
   SystemOptionsResponse,
   SystemTaskListResponse,
   SystemTaskResponse,
@@ -40,23 +38,6 @@ export async function getSystemOptions() {
 
 export async function updateSystemOption(request: UpdateOptionRequest) {
   const res = await api.put<UpdateOptionResponse>('/api/option/', request)
-  return res.data
-}
-
-export async function getRegistrationInviteCode() {
-  const res = await api.get<RegistrationInviteCodeResponse>(
-    '/api/registration/invite-code'
-  )
-  return res.data
-}
-
-export async function updateRegistrationInviteCode(
-  request: Omit<RegistrationInviteCode, 'id' | 'registered_count'>
-) {
-  const res = await api.put<RegistrationInviteCodeResponse>(
-    '/api/registration/invite-code',
-    request
-  )
   return res.data
 }
 

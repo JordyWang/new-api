@@ -20,7 +20,7 @@ package controller
 
 import (
 	"errors"
-	"net/http"
+	"strconv"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/i18n"
@@ -28,12 +28,16 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-type registrationInviteCodeUpdateRequest struct {
+type registrationInviteCodeRequest struct {
 	Code             string `json:"code"`
 	Group            string `json:"group"`
 	ExpiredTime      int64  `json:"expired_time"`
 	InitialQuota     int    `json:"initial_quota"`
 	MaxRegistrations int    `json:"max_registrations"`
+}
+
+type registrationInviteCodeStatusRequest struct {
+	Status int `json:"status"`
 }
 
 func registrationInviteCodeErrorKey(err error) string {
@@ -61,48 +65,137 @@ func writeRegistrationInviteCodeError(c *gin.Context, err error) bool {
 	return false
 }
 
-func GetRegistrationInviteCode(c *gin.Context) {
-	config, err := model.GetRegistrationInviteCode()
+func parseRegistrationInviteCodeID(c *gin.Context) (uint, bool) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil || id == 0 {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return 0, false
+	}
+	return uint(id), true
+}
+
+func ListRegistrationInviteCodes(c *gin.Context) {
+	pageInfo := common.GetPageQuery(c)
+	codes, total, err := model.GetRegistrationInviteCodes(
+		c.Query("keyword"),
+		c.Query("status"),
+		pageInfo.GetStartIdx(),
+		pageInfo.GetPageSize(),
+	)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, config)
+	pageInfo.SetTotal(int(total))
+	pageInfo.SetItems(codes)
+	common.ApiSuccess(c, pageInfo)
 }
 
-func UpdateRegistrationInviteCode(c *gin.Context) {
-	var request registrationInviteCodeUpdateRequest
+func GetRegistrationInviteCode(c *gin.Context) {
+	id, ok := parseRegistrationInviteCodeID(c)
+	if !ok {
+		return
+	}
+	code, err := model.GetRegistrationInviteCodeByID(id)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, code)
+}
+
+func CreateRegistrationInviteCode(c *gin.Context) {
+	var request registrationInviteCodeRequest
 	if err := common.DecodeJson(c.Request.Body, &request); err != nil {
 		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
 		return
 	}
-
-	config := &model.RegistrationInviteCode{
+	created, err := model.CreateRegistrationInviteCode(&model.RegistrationInviteCode{
 		Code:             request.Code,
 		Group:            request.Group,
 		ExpiredTime:      request.ExpiredTime,
 		InitialQuota:     request.InitialQuota,
 		MaxRegistrations: request.MaxRegistrations,
-	}
-	updated, err := model.SaveRegistrationInviteCode(config)
+	})
 	if err != nil {
-		if errors.Is(err, model.ErrRegistrationInviteCodeConfig) {
-			common.ApiErrorI18n(c, i18n.MsgInvalidParams)
-			return
-		}
 		common.ApiError(c, err)
 		return
 	}
+	recordManageAudit(c, "registration_invite_code.create", map[string]interface{}{
+		"id":                created.ID,
+		"group":             created.Group,
+		"expired_time":      created.ExpiredTime,
+		"initial_quota":     created.InitialQuota,
+		"max_registrations": created.MaxRegistrations,
+	})
+	common.ApiSuccess(c, created)
+}
 
+func UpdateRegistrationInviteCode(c *gin.Context) {
+	id, ok := parseRegistrationInviteCodeID(c)
+	if !ok {
+		return
+	}
+	var request registrationInviteCodeRequest
+	if err := common.DecodeJson(c.Request.Body, &request); err != nil {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+	updated, err := model.UpdateRegistrationInviteCode(&model.RegistrationInviteCode{
+		ID:               id,
+		Code:             request.Code,
+		Group:            request.Group,
+		ExpiredTime:      request.ExpiredTime,
+		InitialQuota:     request.InitialQuota,
+		MaxRegistrations: request.MaxRegistrations,
+	})
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
 	recordManageAudit(c, "registration_invite_code.update", map[string]interface{}{
+		"id":                updated.ID,
 		"group":             updated.Group,
 		"expired_time":      updated.ExpiredTime,
 		"initial_quota":     updated.InitialQuota,
 		"max_registrations": updated.MaxRegistrations,
 	})
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "",
-		"data":    updated,
+	common.ApiSuccess(c, updated)
+}
+
+func UpdateRegistrationInviteCodeStatus(c *gin.Context) {
+	id, ok := parseRegistrationInviteCodeID(c)
+	if !ok {
+		return
+	}
+	var request registrationInviteCodeStatusRequest
+	if err := common.DecodeJson(c.Request.Body, &request); err != nil {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+	updated, err := model.UpdateRegistrationInviteCodeStatus(id, request.Status)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	recordManageAudit(c, "registration_invite_code.status", map[string]interface{}{
+		"id":     updated.ID,
+		"status": updated.Status,
 	})
+	common.ApiSuccess(c, updated)
+}
+
+func DeleteRegistrationInviteCode(c *gin.Context) {
+	id, ok := parseRegistrationInviteCodeID(c)
+	if !ok {
+		return
+	}
+	if err := model.DeleteRegistrationInviteCode(id); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	recordManageAudit(c, "registration_invite_code.delete", map[string]interface{}{
+		"id": id,
+	})
+	common.ApiSuccess(c, nil)
 }

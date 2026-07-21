@@ -106,6 +106,10 @@ export default function SettingsSidebarModulesUser() {
         models: isSidebarModuleAllowed('admin', 'models'),
         deployment: isSidebarModuleAllowed('admin', 'deployment'),
         redemption: isSidebarModuleAllowed('admin', 'redemption'),
+        registration_invite: isSidebarModuleAllowed(
+          'admin',
+          'registration_invite',
+        ),
         user: isSidebarModuleAllowed('admin', 'user'),
         setting: isSidebarModuleAllowed('admin', 'setting'),
       };
@@ -348,6 +352,11 @@ export default function SettingsSidebarModulesUser() {
           key: 'redemption',
           title: t('兑换码管理'),
           description: t('兑换码生成管理'),
+        },
+        {
+          key: 'registration_invite',
+          title: t('邀请码管理'),
+          description: t('注册邀请码管理'),
         },
         { key: 'user', title: t('用户管理'), description: t('用户账户管理') },
         {

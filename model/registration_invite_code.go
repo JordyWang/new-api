@@ -21,13 +21,12 @@ package model
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"gorm.io/gorm"
 )
-
-const RegistrationInviteCodeID uint = 1
 
 var (
 	ErrRegistrationInviteCodeRequired      = errors.New("registration invitation code is required")
@@ -36,127 +35,195 @@ var (
 	ErrRegistrationInviteCodeExpired       = errors.New("registration invitation code has expired")
 	ErrRegistrationInviteCodeExhausted     = errors.New("registration invitation code registration limit reached")
 	ErrRegistrationInviteCodeConfig        = errors.New("registration invitation code configuration is invalid")
+	ErrRegistrationInviteCodeDuplicate     = errors.New("registration invitation code already exists")
 )
 
-// RegistrationInviteCode is the singleton invitation-code policy used for
-// public registration. ID is fixed to RegistrationInviteCodeID so updating
-// the policy cannot accidentally create multiple active policies.
 type RegistrationInviteCode struct {
 	ID               uint   `json:"id" gorm:"primaryKey"`
-	Code             string `json:"code" gorm:"type:varchar(128);not null"`
+	Code             string `json:"code" gorm:"type:varchar(128);not null;uniqueIndex"`
 	Group            string `json:"group" gorm:"type:varchar(64);not null"`
+	Status           int    `json:"status" gorm:"type:int"`
 	ExpiredTime      int64  `json:"expired_time" gorm:"type:bigint;not null"`
 	InitialQuota     int    `json:"initial_quota" gorm:"type:int;not null"`
 	MaxRegistrations int    `json:"max_registrations" gorm:"type:int;not null"`
 	RegisteredCount  int    `json:"registered_count" gorm:"type:int;not null"`
+	CreatedTime      int64  `json:"created_time" gorm:"type:bigint"`
+	UpdatedTime      int64  `json:"updated_time" gorm:"type:bigint"`
 }
 
-func (config *RegistrationInviteCode) normalize() {
-	config.Code = strings.TrimSpace(config.Code)
-	config.Group = strings.TrimSpace(config.Group)
-	if config.Group == "" {
-		config.Group = "default"
+func (code *RegistrationInviteCode) normalize() {
+	code.Code = strings.TrimSpace(code.Code)
+	code.Group = strings.TrimSpace(code.Group)
+	if code.Group == "" {
+		code.Group = "default"
 	}
 }
 
-func validateRegistrationInviteCodeFields(config *RegistrationInviteCode) error {
-	if config == nil {
+func validateRegistrationInviteCodeFields(code *RegistrationInviteCode) error {
+	if code == nil {
 		return fmt.Errorf("%w: missing configuration", ErrRegistrationInviteCodeConfig)
 	}
-	config.normalize()
-	if len([]rune(config.Code)) > 128 {
+	code.normalize()
+	if code.Code == "" {
+		return fmt.Errorf("%w: code is required", ErrRegistrationInviteCodeConfig)
+	}
+	if len([]rune(code.Code)) > 128 {
 		return fmt.Errorf("%w: code must be at most 128 characters", ErrRegistrationInviteCodeConfig)
 	}
-	if len([]rune(config.Group)) > 64 {
+	if len([]rune(code.Group)) > 64 {
 		return fmt.Errorf("%w: group must be at most 64 characters", ErrRegistrationInviteCodeConfig)
 	}
-	if config.ExpiredTime < 0 {
+	if code.Status != common.RedemptionCodeStatusEnabled && code.Status != common.RedemptionCodeStatusDisabled {
+		return fmt.Errorf("%w: unsupported status", ErrRegistrationInviteCodeConfig)
+	}
+	if code.ExpiredTime < 0 {
 		return fmt.Errorf("%w: expiration time cannot be negative", ErrRegistrationInviteCodeConfig)
 	}
-	if config.InitialQuota < 0 || config.InitialQuota > common.MaxQuota {
+	if code.InitialQuota < 0 || code.InitialQuota > common.MaxQuota {
 		return fmt.Errorf("%w: initial quota is out of range", ErrRegistrationInviteCodeConfig)
 	}
-	if config.MaxRegistrations < 0 || config.MaxRegistrations > common.MaxQuota {
+	if code.MaxRegistrations < 0 || code.MaxRegistrations > common.MaxQuota {
 		return fmt.Errorf("%w: maximum registrations is out of range", ErrRegistrationInviteCodeConfig)
 	}
-	if config.RegisteredCount < 0 || config.RegisteredCount > common.MaxQuota {
+	if code.RegisteredCount < 0 || code.RegisteredCount > common.MaxQuota {
 		return fmt.Errorf("%w: registered count is out of range", ErrRegistrationInviteCodeConfig)
 	}
-	if config.MaxRegistrations > 0 && config.RegisteredCount > config.MaxRegistrations {
+	if code.MaxRegistrations > 0 && code.RegisteredCount > code.MaxRegistrations {
 		return fmt.Errorf("%w: registered count exceeds maximum registrations", ErrRegistrationInviteCodeConfig)
 	}
 	return nil
 }
 
-// ValidateRegistrationInviteCodeConfig validates administrator-controlled
-// values before they are persisted. A blank code deliberately disables public
-// registration because the registration endpoint always requires a code.
-func ValidateRegistrationInviteCodeConfig(config *RegistrationInviteCode) error {
-	if err := validateRegistrationInviteCodeFields(config); err != nil {
+func ValidateRegistrationInviteCodeConfig(code *RegistrationInviteCode) error {
+	if code != nil && code.Status == 0 {
+		code.Status = common.RedemptionCodeStatusEnabled
+	}
+	if err := validateRegistrationInviteCodeFields(code); err != nil {
 		return err
 	}
-	if config.ExpiredTime != 0 && config.ExpiredTime < common.GetTimestamp() {
+	if code.ExpiredTime != 0 && code.ExpiredTime < common.GetTimestamp() {
 		return fmt.Errorf("%w: expiration time cannot be earlier than now", ErrRegistrationInviteCodeConfig)
 	}
 	return nil
 }
 
-func GetRegistrationInviteCode() (*RegistrationInviteCode, error) {
-	config := &RegistrationInviteCode{
-		ID:    RegistrationInviteCodeID,
-		Group: "default",
-	}
-	if err := DB.First(config, RegistrationInviteCodeID).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return config, nil
+func GetRegistrationInviteCodes(keyword, status string, startIdx, num int) ([]*RegistrationInviteCode, int64, error) {
+	query := DB.Model(&RegistrationInviteCode{})
+	keyword = strings.TrimSpace(keyword)
+	if keyword != "" {
+		if id, err := strconv.Atoi(keyword); err == nil {
+			query = query.Where("id = ? OR code LIKE ? OR "+commonGroupCol+" LIKE ?", id, "%"+keyword+"%", "%"+keyword+"%")
+		} else {
+			query = query.Where("code LIKE ? OR "+commonGroupCol+" LIKE ?", "%"+keyword+"%", "%"+keyword+"%")
 		}
-		return nil, err
 	}
-	return config, nil
+
+	now := common.GetTimestamp()
+	switch status {
+	case "enabled":
+		query = query.Where("status = ? AND (expired_time = 0 OR expired_time >= ?) AND (max_registrations = 0 OR registered_count < max_registrations)", common.RedemptionCodeStatusEnabled, now)
+	case "disabled":
+		query = query.Where("status = ?", common.RedemptionCodeStatusDisabled)
+	case "expired":
+		query = query.Where("status = ? AND expired_time != 0 AND expired_time < ?", common.RedemptionCodeStatusEnabled, now)
+	case "exhausted":
+		query = query.Where("status = ? AND max_registrations > 0 AND registered_count >= max_registrations", common.RedemptionCodeStatusEnabled)
+	}
+
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	var codes []*RegistrationInviteCode
+	if err := query.Order("id DESC").Limit(num).Offset(startIdx).Find(&codes).Error; err != nil {
+		return nil, 0, err
+	}
+	return codes, total, nil
 }
 
-// SaveRegistrationInviteCode updates the singleton policy. The usage counter
-// is server-owned: changing the code starts a new campaign, while editing the
-// other fields preserves the current usage count.
-func SaveRegistrationInviteCode(config *RegistrationInviteCode) (*RegistrationInviteCode, error) {
-	if err := ValidateRegistrationInviteCodeConfig(config); err != nil {
+func GetRegistrationInviteCodeByID(id uint) (*RegistrationInviteCode, error) {
+	if id == 0 {
+		return nil, fmt.Errorf("%w: invalid id", ErrRegistrationInviteCodeConfig)
+	}
+	var code RegistrationInviteCode
+	if err := DB.First(&code, id).Error; err != nil {
+		return nil, err
+	}
+	return &code, nil
+}
+
+func CreateRegistrationInviteCode(code *RegistrationInviteCode) (*RegistrationInviteCode, error) {
+	if code == nil {
+		return nil, fmt.Errorf("%w: missing configuration", ErrRegistrationInviteCodeConfig)
+	}
+	code.ID = 0
+	code.RegisteredCount = 0
+	code.Status = common.RedemptionCodeStatusEnabled
+	if err := ValidateRegistrationInviteCodeConfig(code); err != nil {
+		return nil, err
+	}
+	var count int64
+	if err := DB.Model(&RegistrationInviteCode{}).Where("code = ?", code.Code).Count(&count).Error; err != nil {
+		return nil, err
+	}
+	if count > 0 {
+		return nil, ErrRegistrationInviteCodeDuplicate
+	}
+	now := common.GetTimestamp()
+	code.CreatedTime = now
+	code.UpdatedTime = now
+	if err := DB.Create(code).Error; err != nil {
+		return nil, err
+	}
+	return code, nil
+}
+
+func UpdateRegistrationInviteCode(code *RegistrationInviteCode) (*RegistrationInviteCode, error) {
+	if code == nil || code.ID == 0 {
+		return nil, fmt.Errorf("%w: invalid id", ErrRegistrationInviteCodeConfig)
+	}
+	code.Status = common.RedemptionCodeStatusEnabled
+	if err := ValidateRegistrationInviteCodeConfig(code); err != nil {
 		return nil, err
 	}
 
 	var saved RegistrationInviteCode
 	err := DB.Transaction(func(tx *gorm.DB) error {
-		var current RegistrationInviteCode
-		err := lockForUpdate(tx).First(&current, RegistrationInviteCodeID).Error
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			config.ID = RegistrationInviteCodeID
-			config.RegisteredCount = 0
-			if err := tx.Create(config).Error; err != nil {
-				return err
-			}
-			saved = *config
-			return nil
-		}
-		if err != nil {
+		if err := lockForUpdate(tx).First(&saved, code.ID).Error; err != nil {
 			return err
 		}
-
-		config.ID = RegistrationInviteCodeID
-		if config.Code == current.Code {
-			config.RegisteredCount = current.RegisteredCount
-		} else {
-			config.RegisteredCount = 0
-		}
-		if err := ValidateRegistrationInviteCodeConfig(config); err != nil {
-			return err
-		}
+		var duplicateCount int64
 		if err := tx.Model(&RegistrationInviteCode{}).
-			Where("id = ?", RegistrationInviteCodeID).
-			Select("code", "group", "expired_time", "initial_quota", "max_registrations", "registered_count").
-			Updates(config).Error; err != nil {
+			Where("code = ? AND id != ?", code.Code, code.ID).
+			Count(&duplicateCount).Error; err != nil {
 			return err
 		}
-		saved = *config
-		return nil
+		if duplicateCount > 0 {
+			return ErrRegistrationInviteCodeDuplicate
+		}
+		registeredCount := saved.RegisteredCount
+		if saved.Code != code.Code {
+			registeredCount = 0
+		}
+		validated := *code
+		validated.Status = saved.Status
+		validated.RegisteredCount = registeredCount
+		if err := ValidateRegistrationInviteCodeConfig(&validated); err != nil {
+			return err
+		}
+		updates := map[string]interface{}{
+			"code":              code.Code,
+			"group":             code.Group,
+			"expired_time":      code.ExpiredTime,
+			"initial_quota":     code.InitialQuota,
+			"max_registrations": code.MaxRegistrations,
+			"registered_count":  registeredCount,
+			"updated_time":      common.GetTimestamp(),
+		}
+		if err := tx.Model(&RegistrationInviteCode{}).Where("id = ?", code.ID).Updates(updates).Error; err != nil {
+			return err
+		}
+		return tx.First(&saved, code.ID).Error
 	})
 	if err != nil {
 		return nil, err
@@ -164,20 +231,48 @@ func SaveRegistrationInviteCode(config *RegistrationInviteCode) (*RegistrationIn
 	return &saved, nil
 }
 
-func registrationInviteCodeStateError(config *RegistrationInviteCode, code string, now int64) error {
-	if config.Code == "" {
-		return ErrRegistrationInviteCodeNotConfigured
+func UpdateRegistrationInviteCodeStatus(id uint, status int) (*RegistrationInviteCode, error) {
+	if id == 0 || (status != common.RedemptionCodeStatusEnabled && status != common.RedemptionCodeStatusDisabled) {
+		return nil, fmt.Errorf("%w: invalid status update", ErrRegistrationInviteCodeConfig)
 	}
-	if config.Code != code {
+	result := DB.Model(&RegistrationInviteCode{}).Where("id = ?", id).Updates(map[string]interface{}{
+		"status":       status,
+		"updated_time": common.GetTimestamp(),
+	})
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	if result.RowsAffected == 0 {
+		return nil, gorm.ErrRecordNotFound
+	}
+	return GetRegistrationInviteCodeByID(id)
+}
+
+func DeleteRegistrationInviteCode(id uint) error {
+	if id == 0 {
+		return fmt.Errorf("%w: invalid id", ErrRegistrationInviteCodeConfig)
+	}
+	result := DB.Delete(&RegistrationInviteCode{}, id)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
+func registrationInviteCodeStateError(code *RegistrationInviteCode, now int64) error {
+	if code.Status != common.RedemptionCodeStatusEnabled {
 		return ErrRegistrationInviteCodeInvalid
 	}
-	if config.ExpiredTime != 0 && config.ExpiredTime < now {
+	if code.ExpiredTime != 0 && code.ExpiredTime < now {
 		return ErrRegistrationInviteCodeExpired
 	}
-	if config.MaxRegistrations > 0 && config.RegisteredCount >= config.MaxRegistrations {
+	if code.MaxRegistrations > 0 && code.RegisteredCount >= code.MaxRegistrations {
 		return ErrRegistrationInviteCodeExhausted
 	}
-	return fmt.Errorf("%w: concurrent update", ErrRegistrationInviteCodeConfig)
+	return nil
 }
 
 // ReserveRegistrationInviteCode validates a code and increments its usage
@@ -192,31 +287,47 @@ func ReserveRegistrationInviteCode(tx *gorm.DB, code string) (*RegistrationInvit
 
 	now := common.GetTimestamp()
 	var current RegistrationInviteCode
-	if err := tx.First(&current, RegistrationInviteCodeID).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
+	if err := tx.Where("code = ?", code).First(&current).Error; err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
+		}
+		var count int64
+		if countErr := tx.Model(&RegistrationInviteCode{}).Count(&count).Error; countErr != nil {
+			return nil, countErr
+		}
+		if count == 0 {
 			return nil, ErrRegistrationInviteCodeNotConfigured
 		}
-		return nil, err
+		return nil, ErrRegistrationInviteCodeInvalid
 	}
 	if err := validateRegistrationInviteCodeFields(&current); err != nil {
 		return nil, err
 	}
+	if err := registrationInviteCodeStateError(&current, now); err != nil {
+		return nil, err
+	}
 
 	result := tx.Model(&RegistrationInviteCode{}).
-		Where("id = ? AND code = ? AND (expired_time = 0 OR expired_time >= ?) AND (max_registrations = 0 OR registered_count < max_registrations)",
-			RegistrationInviteCodeID, code, now).
-		UpdateColumn("registered_count", gorm.Expr("registered_count + ?", 1))
+		Where("id = ? AND code = ? AND status = ? AND (expired_time = 0 OR expired_time >= ?) AND (max_registrations = 0 OR registered_count < max_registrations)",
+			current.ID, code, common.RedemptionCodeStatusEnabled, now).
+		UpdateColumns(map[string]interface{}{
+			"registered_count": gorm.Expr("registered_count + ?", 1),
+			"updated_time":     now,
+		})
 	if result.Error != nil {
 		return nil, result.Error
 	}
 	if result.RowsAffected == 0 {
-		if err := lockForUpdate(tx).First(&current, RegistrationInviteCodeID).Error; err != nil {
+		if err := lockForUpdate(tx).First(&current, current.ID).Error; err != nil {
 			return nil, err
 		}
-		return nil, registrationInviteCodeStateError(&current, code, now)
+		if err := registrationInviteCodeStateError(&current, now); err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("%w: concurrent update", ErrRegistrationInviteCodeConfig)
 	}
 
-	if err := lockForUpdate(tx).First(&current, RegistrationInviteCodeID).Error; err != nil {
+	if err := lockForUpdate(tx).First(&current, current.ID).Error; err != nil {
 		return nil, err
 	}
 	return &current, nil

@@ -304,6 +304,9 @@ func migrateDB() error {
 	if err != nil {
 		return err
 	}
+	if err := migrateRegistrationInviteCodes(); err != nil {
+		return err
+	}
 	if common.UsingMainDatabase(common.DatabaseTypeSQLite) {
 		if err := ensureSubscriptionPlanTableSQLite(); err != nil {
 			return err
@@ -314,6 +317,20 @@ func migrateDB() error {
 		}
 	}
 	return nil
+}
+
+func migrateRegistrationInviteCodes() error {
+	if err := DB.Where("code = ?", "").Delete(&RegistrationInviteCode{}).Error; err != nil {
+		return err
+	}
+	now := common.GetTimestamp()
+	return DB.Model(&RegistrationInviteCode{}).
+		Where("status = ?", 0).
+		Updates(map[string]interface{}{
+			"status":       common.RedemptionCodeStatusEnabled,
+			"created_time": now,
+			"updated_time": now,
+		}).Error
 }
 
 func migrateDBFast() error {

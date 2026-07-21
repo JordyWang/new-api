@@ -95,7 +95,7 @@ func callRegisterWithInviteCode(t *testing.T, payload map[string]any) registrati
 
 func TestRegisterRequiresRegistrationInviteCode(t *testing.T) {
 	db := setupRegistrationInviteCodeControllerTestDB(t)
-	_, err := model.SaveRegistrationInviteCode(&model.RegistrationInviteCode{
+	created, err := model.CreateRegistrationInviteCode(&model.RegistrationInviteCode{
 		Code:             "required-code",
 		Group:            "default",
 		MaxRegistrations: 10,
@@ -112,14 +112,14 @@ func TestRegisterRequiresRegistrationInviteCode(t *testing.T) {
 	var userCount int64
 	require.NoError(t, db.Model(&model.User{}).Count(&userCount).Error)
 	assert.Zero(t, userCount)
-	config, err := model.GetRegistrationInviteCode()
+	config, err := model.GetRegistrationInviteCodeByID(created.ID)
 	require.NoError(t, err)
 	assert.Zero(t, config.RegisteredCount)
 }
 
 func TestRegisterAppliesRegistrationInviteCodeProvisioning(t *testing.T) {
 	db := setupRegistrationInviteCodeControllerTestDB(t)
-	_, err := model.SaveRegistrationInviteCode(&model.RegistrationInviteCode{
+	created, err := model.CreateRegistrationInviteCode(&model.RegistrationInviteCode{
 		Code:             "vip-code",
 		Group:            "vip",
 		InitialQuota:     1234,
@@ -138,14 +138,14 @@ func TestRegisterAppliesRegistrationInviteCodeProvisioning(t *testing.T) {
 	require.NoError(t, db.Where("username = ?", "provisioned-user").First(&user).Error)
 	assert.Equal(t, "vip", user.Group)
 	assert.Equal(t, 1234, user.Quota)
-	config, err := model.GetRegistrationInviteCode()
+	config, err := model.GetRegistrationInviteCodeByID(created.ID)
 	require.NoError(t, err)
 	assert.Equal(t, 1, config.RegisteredCount)
 }
 
 func TestRegisterRejectsExhaustedRegistrationInviteCode(t *testing.T) {
 	db := setupRegistrationInviteCodeControllerTestDB(t)
-	_, err := model.SaveRegistrationInviteCode(&model.RegistrationInviteCode{
+	created, err := model.CreateRegistrationInviteCode(&model.RegistrationInviteCode{
 		Code:             "single-use-code",
 		Group:            "default",
 		InitialQuota:     10,
@@ -171,7 +171,63 @@ func TestRegisterRejectsExhaustedRegistrationInviteCode(t *testing.T) {
 	var userCount int64
 	require.NoError(t, db.Model(&model.User{}).Count(&userCount).Error)
 	assert.EqualValues(t, 1, userCount)
-	config, err := model.GetRegistrationInviteCode()
+	config, err := model.GetRegistrationInviteCodeByID(created.ID)
 	require.NoError(t, err)
 	assert.Equal(t, 1, config.RegisteredCount)
+}
+
+func TestRegistrationInviteCodeManagementPagination(t *testing.T) {
+	setupRegistrationInviteCodeControllerTestDB(t)
+	for _, payload := range []map[string]any{
+		{
+			"code":              "default-code",
+			"group":             "default",
+			"initial_quota":     10,
+			"max_registrations": 5,
+		},
+		{
+			"code":              "vip-code",
+			"group":             "vip",
+			"initial_quota":     20,
+			"max_registrations": 10,
+		},
+	} {
+		body, err := common.Marshal(payload)
+		require.NoError(t, err)
+		recorder := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(recorder)
+		ctx.Request = httptest.NewRequest(http.MethodPost, "/api/registration/invite-codes", bytes.NewReader(body))
+		CreateRegistrationInviteCode(ctx)
+		require.Equal(t, http.StatusOK, recorder.Code)
+		var response registrationInviteCodeAPIResponse
+		require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+		require.True(t, response.Success, response.Message)
+	}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(
+		http.MethodGet,
+		"/api/registration/invite-codes?p=1&page_size=1&keyword=vip",
+		nil,
+	)
+	ListRegistrationInviteCodes(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	var response struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Page     int                            `json:"page"`
+			PageSize int                            `json:"page_size"`
+			Total    int                            `json:"total"`
+			Items    []model.RegistrationInviteCode `json:"items"`
+		} `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+	require.True(t, response.Success)
+	assert.Equal(t, 1, response.Data.Page)
+	assert.Equal(t, 1, response.Data.PageSize)
+	assert.Equal(t, 1, response.Data.Total)
+	require.Len(t, response.Data.Items, 1)
+	assert.Equal(t, "vip-code", response.Data.Items[0].Code)
 }

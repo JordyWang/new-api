@@ -60,6 +60,7 @@ const DEFAULT_SIDEBAR_MODULES: SidebarModulesAdminConfig = {
     channel: true,
     models: true,
     redemption: true,
+    registration_invite: true,
     user: true,
     setting: true,
     subscription: true,
@@ -113,6 +114,10 @@ const URL_TO_CONFIG_MAP: Record<string, { section: string; module: string }> = {
   '/models/deployments': { section: 'admin', module: 'models' },
   '/users': { section: 'admin', module: 'user' },
   '/redemption-codes': { section: 'admin', module: 'redemption' },
+  '/registration-invite-codes': {
+    section: 'admin',
+    module: 'registration_invite',
+  },
   '/subscriptions': { section: 'admin', module: 'subscription' },
   '/system-settings': { section: 'admin', module: 'setting' },
   '/system-settings/site': { section: 'admin', module: 'setting' },

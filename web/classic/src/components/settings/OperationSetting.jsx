@@ -27,7 +27,6 @@ import SettingsLog from '../../pages/Setting/Operation/SettingsLog';
 import SettingsMonitoring from '../../pages/Setting/Operation/SettingsMonitoring';
 import SettingsCreditLimit from '../../pages/Setting/Operation/SettingsCreditLimit';
 import SettingsCheckin from '../../pages/Setting/Operation/SettingsCheckin';
-import SettingsRegistrationInviteCode from '../../pages/Setting/Operation/SettingsRegistrationInviteCode';
 import { API, showError, toBoolean } from '../../helpers';
 
 const OperationSetting = () => {
@@ -155,8 +154,6 @@ const OperationSetting = () => {
         <Card style={{ marginTop: '10px' }}>
           <SettingsCheckin options={inputs} refresh={onRefresh} />
         </Card>
-        {/* 注册邀请码设置 */}
-        <SettingsRegistrationInviteCode />
       </Spin>
     </>
   );
