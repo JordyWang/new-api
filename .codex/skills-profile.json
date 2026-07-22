@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "project": "new-api",
+  "policy": {
+    "disable_unlisted": true,
+    "deny_external_login": true
+  },
+  "enabled": [
+    "select-project-skills",
+    "systematic-debugging",
+    "verification-before-completion"
+  ],
+  "reasons": {
+    "select-project-skills": "Keeps the repository skill profile aligned with the project.",
+    "systematic-debugging": "Supports diagnosis across the Go backend and React frontend.",
+    "verification-before-completion": "Requires evidence before reporting implementation work as complete."
+  }
+}
