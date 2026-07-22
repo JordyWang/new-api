@@ -8,33 +8,35 @@
 
 ## 结论
 
-自动指纹的配置结构与 Transfigure Browser 39-patch Chromium 的实际解析器兼容，Profile 级稳定 seed、代理强制、WebRTC 限制和地区字段分离方式也是正确的。审计发现的主要问题不是字段缺失，而是审计早期模板草案混用了来源：它使用了 FP-Controlink 2020—2021 历史受控样本中的 `HD Graphics 5500 + 4 cores` 组合，却把模板命名为 Formal Chromium 150。该组合内部并不矛盾，但没有被 2026-07-18 的 Chromium 150 正式验收直接覆盖。
+`v1` 模板能够证明 Transfigure Browser 的字段覆盖补丁生效，但不足以作为生产设备模板。根因是它直接复用了 Formal release smoke 的“全字段覆盖”验收夹具；该夹具的目标是一次覆盖尽可能多的补丁，不是模拟常见浏览器。
 
-新建 Profile 的模板现已对齐正式验收配置：
+自动创建的 Fingerprint 已升级为：
 
-- 模板 ID：`formal-150-linux-x86_64-20260718-v1`
-- UA / Client Hints：Chromium `150.0.7871.46`、Linux x86_64
-- CPU / memory：8 logical cores、8 GiB
-- WebGL / WebGPU：Intel UHD Graphics 630、Gen 9、device `0x3e92`
-- Screen：1920×1080、available 1920×1040、DPR 1
-- 字体 family allowlist：Arial、Courier New、Times New Roman、Noto Sans、Noto Serif、Noto Color Emoji
+- 模板 ID：`formal-150-linux-x86_64-20260722-v2`
+- 固定核心：Chromium 150 / Linux x86_64 的 UA 与 Client Hints、Navigator 平台字段、1920×1080 屏幕、8 cores / 8 GiB、Canvas/WebGL/Audio seed、WebRTC 策略；
+- Chromium 原生表面：GPU 身份与能力、字体、Battery、Storage、Network Information、媒体设备、在线状态、Cookie/DNT 和 PDF 插件状态；
+- 每次启动覆盖：代理出口、Locale、语言和 IANA Timezone。
 
-模板升级只影响之后自动创建的 Fingerprint。已经写入数据库的 Fingerprint 不会被重新生成或静默修改，因此同一 Profile 多次打开仍保持原有身份。
+这个边界保证 new-api 只固定能够完整控制且需要跨启动稳定的字段。动态字段、权限敏感字段以及补丁只能局部覆盖的硬件字段由浏览器返回真实值，避免出现“字段匹配验收夹具，但字段之间互相矛盾”的情况。
 
-这份结论只证明配置契约、运行时兼容性和 Profile 内稳定性，不承诺规避第三方风控，也不把历史研究样本解释为 2026 年真实用户分布。
+模板升级只影响之后自动创建的 Fingerprint。已经写入数据库的 Fingerprint 不会被重新生成或静默修改，因此既有 Profile 多次打开仍保持原身份。
 
-## 证据优先级
+这份结论只覆盖协议兼容、字段内部一致性、运行时可验证性和 Profile 内稳定性，不承诺规避第三方风控，也不使用历史样本拼装所谓真人画像。
+
+## 证据范围与优先级
 
 | 优先级 | 证据 | 用途 |
 | --- | --- | --- |
-| 1 | `/android/transfigure-browser/releases/chromium-150.0.7871.46/acceptance/2026-07-18-39patch-formal/` 的正式归档 | 确定当前 Chromium 版本、正式模板值、已通过字段和已接受限制 |
-| 2 | `/android/chromium-src/src/components/embedder_support/transfigure_profile_config.{h,cc}` | 确定 browser-process 对 UA、Client Hints、Accept-Language、WebRTC 和 Proxy 的实际解析行为 |
-| 3 | `/android/chromium-src/src/third_party/blink/renderer/core/frame/transfigure_fingerprint_config.{h,cc}` | 确定 Blink 对 Navigator、硬件、屏幕、Canvas、Audio、WebGL、WebGPU、字体、媒体设备和存储等字段的实际解析行为 |
-| 4 | `/android/transfigure-browser/profiles/examples/transfigure-fingerprint-config.example.json` | 提供正式 smoke 使用的可读配置基线 |
-| 5 | `transfigure_risk_data.risk_data.active_ref_browser_fingerprints` | 只做历史受控组合的字段一致性复核，不用于生成当前人口画像 |
-| 6 | 当前宿主机字体与 Chromium 二进制检查 | 确认部署前提，不代替网页可见 probe |
+| 1 | 指定 Formal Chromium 二进制的无配置与配置后 headed runtime probe | 对比网页真实可见值，验证实际启动参数影响 |
+| 2 | `/android/chromium-src/src/components/embedder_support/` 与 Blink 对应源码 | 确定 UA/CH、Battery、GPU、字体和媒体字段的真实控制边界 |
+| 3 | `/android/transfigure-browser/releases/chromium-150.0.7871.46/acceptance/2026-07-18-39patch-formal/` | 确定补丁版本、正式门禁、稳定字段和已知环境限制 |
+| 4 | W3C Battery Status、Media Capture and Streams 与 UA Client Hints 规范 | 检查跨字段语义、权限和 origin 隔离要求 |
+| 5 | 当前 Agent 主机的字体、GPU、CPU、屏幕和浏览器默认行为 | 检查部署环境中的真实一致性，不外推为人口分布 |
+| 6 | `transfigure-risk-data` 历史受控样本 | 只做历史字段兼容和明显跨平台矛盾复核 |
 
-正式验收所用二进制为：
+审计没有把 risk-data 当作唯一或最高优先级来源。Formal 验收配置本身也只证明“补丁能按配置返回值”，不能证明该组合常见。
+
+正式二进制：
 
 ```text
 /android/transfigure-browser/runtime/formal-workspaces/chromium-150.0.7871.46-formal-20260717/out/Acceptance-20260718T033425Z/chrome
@@ -42,157 +44,142 @@ Chromium 150.0.7871.46
 sha256 3dcefb74b6d429c54d29f2bcb31e0dc172deff3bdc01018dc6850419451762b2
 ```
 
-Browser Agent 的 runtime key 必须指向这个二进制或经过同一套 39-patch、版本和 probe 门禁验证的等价产物。
+## 运行时对照结果
 
-## 当前模板契约
+审计在同一个 headed X11 环境中分别启动了未配置的 Formal Chromium、`v1` Formal 配置和 `v2` 配置。探针使用 `/android/transfigure-browser/tools/fingerprint-probe/`，页面和 Header 捕获都只访问本机 loopback。
 
-### JSON 结构兼容性
+| 表面 | 未配置 Chromium 150 | `v1` / Formal 夹具 | `v2` 决策 |
+| --- | --- | --- | --- |
+| Legacy UA | `Chrome/150.0.0.0` | `Chrome/150.0.7871.46` | 使用 Chromium 默认的 reduced UA |
+| 低熵 UA-CH | `Not;A=Brand 8` + `Chromium 150` | 只有 `Chromium 150` | 与该二进制默认 brand list 一致 |
+| 高熵 UA-CH | x86/64，full `150.0.7871.46` | 配置本身可匹配 | 保留完整版本并移除冲突的 CLI UA 参数 |
+| Battery | `true / 0 / Infinity / 1` | `true / 0 / 36000 / 1` | 原生；不固定动态状态 |
+| Storage | 新 Profile 实测 10 GiB / 0 | 固定 20 GiB / 100 MiB | 原生；随 origin 数据真实变化 |
+| Network | 实测值会随连接变化，例如 1.3 Mbps / 100 ms | 固定 10 Mbps / 50 ms | 原生；不伪装代理实际链路 |
+| Media devices | 无权限时只有空 label/ID 的输出设备 | 三个带固定 label/ID 的虚拟设备 | 原生权限和 per-origin ID 规则 |
+| Local Font Access | 当前主机实测 142 个 family | allowlist 后只剩 `Noto Color Emoji` | 原生；未接 FontBundle 前不声明不存在的字体 |
+| WebGL identity | 当前主机 NVIDIA RTX 3070 Ti | 声明 Intel UHD 630 | 原生 GPU identity/extensions/limits，只保留 readback seed |
+| WebGL limits | 原生 `MAX_TEXTURE_SIZE=32768` 等 | 声明 Intel 后仍是同一组宿主 limits | 原生，避免局部伪装 |
+| WebGPU | 当前运行环境不可用 | 配置 Intel metadata 仍不可见 | 不写无从验证的 metadata |
+| WebRTC non-relay | 未保护时可见 host candidate | Formal 保护为 0 | `v2` 五个探针读取面均为 0 |
 
-两个 Chromium parser 都支持以下两种结构：
+`1920×1080 / DPR 1 / 8 cores / 8 GiB` 是固定、可解释的桌面基线，不是统计抽样结果。屏幕 payload 与 Agent 的 `--window-size` 同步，UA、Navigator、Client Hints 和 OS 架构也使用同一 Linux x86_64 基线。
 
-- 根级扁平字段，例如 `{"navigator": ..., "hardware": ...}`；
-- 嵌套字段，例如 `{"fingerprint": {"navigator": ..., "hardware": ...}}`。
+## 已修复的实际启动参数冲突
 
-当 `fingerprint` 对象存在时，parser 会优先读取该对象。审计中发现，Agent 早期的地区覆盖逻辑会对根级扁平配置无条件新增 `fingerprint` 对象，导致原本位于根级的 CPU、GPU、屏幕等核心字段被新对象遮蔽。当前实现已改为在原有结构内注入地区字段：扁平输入保持扁平，嵌套输入保持嵌套；控制面保存时也会从对应核心对象移除 Locale、Timezone 和语言字段。两种结构都有回归测试保护。
+审计按 new-api 的真实参数组合启动 `v2` 时发现：如果 Agent 同时传入 Transfigure 配置和 Chromium `--user-agent`，低熵 UA-CH 仍存在，但高熵字段会变为空字符串，`fullVersionList` 也会变为空数组。
 
-### Browser process 与 renderer 的配置传递
+根因可在 Chromium 150 的 `components/embedder_support/user_agent_utils.cc` 中直接确认：`GetUserAgentMetadata()` 检测到命令行自定义 UA 后会在填充高熵字段之前提前返回。Transfigure 的高熵覆盖位于这条返回路径之后，因此无法生效。
 
-审计还发现，早期 Agent 只把合并后的 JSON 写入 `.new-api/fingerprint.json`，是否传递 `--transfigure-fingerprint-config` 完全依赖 Fingerprint 自定义启动参数。手工 Fingerprint 的默认启动参数为空；自动生成记录也只有路径参数，没有 Formal launcher 使用的内联 JSON。路径足以让 browser process 读取一部分配置，却不能证明 sandbox 中的 Blink renderer 能读取同一文件，因此核心 Canvas、Audio、WebGL、Navigator 等字段存在未生效风险。
+Agent 现在把数据库中的 `Fingerprint.UserAgent` 写入同一份受控 Fingerprint JSON，并且不再传 `--user-agent`。UA 和 Client Hints 由 Transfigure browser-process 配置一起应用。运行时复测结果为：
 
-当前 Agent 已与 Formal launcher 的传递契约对齐。它读取同一份 `0600` 配置快照，使用标准 Base64 编码，并强制同时设置：
+```text
+User-Agent: Chrome/150.0.0.0
+Sec-CH-UA: "Not;A=Brand";v="8", "Chromium";v="150"
+architecture: x86
+bitness: 64
+uaFullVersion: 150.0.7871.46
+fullVersionList: Not;A=Brand 8.0.0.0, Chromium 150.0.7871.46
+```
 
-- `--transfigure-fingerprint-config=<path>`
-- `--transfigure-fingerprint-config-json=<base64>`
-- `TRANSFIGURE_FINGERPRINT_CONFIG=<path>`
-- `TRANSFIGURE_FINGERPRINT_CONFIG_JSON=<base64>`
+自定义 Fingerprint 仍可只填写数据库的 User Agent 字段；Agent 会在落盘快照中注入该值。服务端自定义启动参数继续禁止 `--user-agent`，避免重新引入两个 UA 来源。
 
-Fingerprint 自定义参数和环境变量不能覆盖这些值。数据库中已有的两个 Transfigure 启动参数会被 Agent 忽略并替换为受控值，避免升级后使旧 Profile 无法打开；新自动 Fingerprint 的自定义启动参数为空数组。回归测试覆盖空参数、旧参数替换、受控环境变量以及从落盘文件生成内联快照的完整启动链路。
+## 为什么不再固定部分字段
 
-### 固定且跨启动复用
+### Battery
 
-以下字段在 Fingerprint 创建时确定，之后直接从数据库复用：
+W3C Battery Status 规定：电池正在充电、无法报告剩余放电时间或没有电池时，`dischargingTime` 必须为正 Infinity。Chromium Linux 的默认 `BatteryStatus` 和无电池单元测试也是 `charging=true`、`chargingTime=0`、`dischargingTime=Infinity`、`level=1`。
 
-| 类别 | 固定字段 |
+`v1` 的 `charging=true` 与 `dischargingTime=36000` 语义冲突。当前 JSON parser 又不能表达 Infinity，因此 `v2` 不覆盖 Battery。
+
+### Media devices
+
+Media Capture and Streams 规范要求可识别用户的 `deviceId` 对其他 origin 不可猜测，并随 origin 存储清理而轮换；`groupId` 需要按 document 生成。普通 Chromium 还会根据权限控制 label 和可见设备信息。
+
+Formal 补丁会直接返回配置中的固定 ID、group 和 label，不执行这些 origin/权限语义。`v2` 删除固定设备列表，让持久化 Chromium Profile 自己管理设备标识和权限。
+
+### GPU 与字体
+
+当前补丁可覆盖 WebGL vendor/renderer、extension allowlist 和 readback noise，但不会覆盖全部 WebGL limits、shader precision、驱动行为或性能。实测将宿主 NVIDIA 标成 Intel 后，`MAX_TEXTURE_SIZE`、viewport limits 等仍与未配置宿主完全相同。`v2` 因此只保留 WebGL noise seed，不伪造 GPU 型号。
+
+字体 allowlist 只会过滤现有字体，不会安装字体。Formal 配置声明的 Arial、Courier New、Times New Roman、Noto Sans 和 Noto Serif 在正式报告的 Local Font Access 中都不存在，只枚举到 Noto Color Emoji。接入带 manifest 和文件哈希的 FontBundle 前，`v2` 使用 Agent 主机原生字体。
+
+### Storage、Network 与 Navigator 动态状态
+
+Storage usage 是 origin 数据量，Network Information 是当前连接估计，`navigator.onLine`、Cookie、DNT 和 PDF 状态也可能随用户设置或环境变化。把这些值写成所有 Profile 相同的常量不会提高身份一致性，反而会制造与真实状态冲突，所以 `v2` 不覆盖它们。
+
+## `v2` 固定与动态契约
+
+### 创建时固定并持久化
+
+| 类别 | 字段 |
 | --- | --- |
-| 浏览器身份 | UA、Chromium full version、Client Hints brands/platform/architecture/bitness |
-| Navigator | platform、vendor、product、appVersion、touch points、cookie、online、PDF viewer、webdriver |
-| 硬件与屏幕 | concurrency、device memory、screen/available area、color depth、DPR |
-| 图形与音频 | WebGL vendor/renderer/extensions、WebGPU adapter metadata、Canvas/WebGL/Audio seed |
-| 设备与存储 | media device IDs、battery、storage estimate、network information |
+| 浏览器身份 | reduced UA、Chromium full version、GREASE + Chromium brands、platform/architecture/bitness |
+| Navigator | appName/appCodeName/appVersion、platform、vendor/product、touch points |
+| 屏幕与硬件 | 1920×1080、available 1920×1040、DPR 1、8 cores、8 GiB |
+| 差异 seed | Canvas、WebGL readback、OfflineAudioContext |
+| 安全策略 | `webdriver=false`、`disable_non_proxied_udp` |
 
-Canvas、WebGL、Audio 和 media device ID 在创建时使用 Profile 的初始 `data_key` 分域派生，随后作为 Fingerprint payload 持久化。Chromium 最终把字符串 noise seed 归一为 32-bit seed；同一 Profile 的值稳定，不同 Profile 使用不同输入。“重置 Profile 数据”只轮换浏览器存储目录 key，不会重算或改变已经保存的 Fingerprint。
+Seed 由创建时的随机 `data_key` 通过分域 HMAC-SHA256 派生，payload 随 Fingerprint 持久化。“重置 Profile 数据”只轮换浏览器目录 key，不会重算 Fingerprint。
 
-### 每次启动动态注入
+### 由持久化 Chromium Profile 和绑定 Agent 提供
 
-下列字段不属于固定指纹：
+- GPU vendor/renderer/extensions/limits、WebGPU；
+- 字体及 Local Font Access；
+- Battery、Storage、Network Information；
+- 媒体设备、permission、per-origin ID；
+- online、Cookie、DNT、PDF viewer 等运行时状态。
 
-- 出口 IP
-- 国家或地区
-- Locale
-- `Accept-Language` / `navigator.languages`
-- IANA Timezone
+Profile 固定绑定 Agent 和 runtime，因此在 Agent 硬件、字体包、浏览器版本不变时，这些原生表面也会自然保持稳定。运维升级可能改变它们，这属于 runtime 变更，不能伪装成数据库 Fingerprint 永久不变。
 
-Browser Agent 每次启动都必须先通过同一托管代理获取 GeoIP，再把语言和时区覆盖到临时 `.new-api/fingerprint.json`。浏览器预检会读取实际 `navigator.language`、`navigator.languages` 和 Intl timezone；不一致时终止流程。核心 Fingerprint 数据库记录不保存这些地区字段。
+### 每次启动按代理注入
 
-IP 不参与 CPU、GPU、Canvas、Audio、屏幕或 media device seed 的生成。更换代理只改变本次地区覆盖和网络出口，不应改变固定设备身份。
+- 出口 IP、国家或地区；
+- Locale、`Accept-Language`、`navigator.languages`；
+- IANA Timezone。
 
-### 代理与泄漏面
+IP 不参与 CPU、Canvas、Audio、屏幕或其他固定 seed 的生成。更换代理只改变本次地区覆盖和网络出口。
 
-Agent 强制追加以下运行约束，Fingerprint 的自定义参数不能覆盖：
+## 与历史 risk-data 的关系
 
-- `--proxy-server`
-- `--disable-quic`
-- `--force-webrtc-ip-handling-policy=disable_non_proxied_udp`
-- 只允许 OAuth 本地预检和回调使用 loopback bypass
-- `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 与 Chromium 使用同一托管代理
+`transfigure-risk-data` 当前活跃发布包含 FP-Controlink 2020—2021 的 1,148 个受控 Profile。它能证明某些历史组合确实出现过，也能帮助检查字段名和值域，但不能代表 2026 年市场份额、普通用户分布或当前 Chromium 默认值。
 
-39-patch 正式验收覆盖 candidate event/local SDP、`RTCStatsReport`、`RTCIceTransport` 和 detached iframe 生命周期；保护模式下非 relay 地址计数为 0。
+因此它只用于：
 
-## 与 FP-Controlink 历史数据的复核
+- 检查明显跨平台矛盾；
+- 复核历史字段解析兼容；
+- 设计防御性一致性测试。
 
-`transfigure-risk-data` 当前活跃发布包含 FP-Controlink 的 1,148 个受控 Profile。数据库快照和项目文档都明确说明它是 2020—2021 历史实验数据，不代表 2026 年市场份额或真实人口分布。
-
-2026-07-22 对活跃视图进行只读聚合得到：
-
-| 字段 | 历史受控结果 |
-| --- | ---: |
-| Ubuntu 20.04 | 1,062 / 1,148 |
-| 1920×1080 | 1,008 / 1,148 |
-| hardware concurrency = 4 | 950 / 1,148 |
-| `navigator.platform = Linux x86_64` | 1,058 / 1,148 |
-| WebDriver = true / false / unknown | 845 / 288 / 15 |
-
-统计口径使用数据库中的小写值 `os_name = 'ubuntu'` 和 `os_version = '20.04'`。历史 Chrome + Ubuntu 记录中，`1920×1080 + 4 cores + Google Inc. + ANGLE Intel HD Graphics 5500` 是真实出现过的受控组合。这说明审计早期模板草案的 CPU/GPU/screen 字段并非互相冲突，但不能证明它适合 Chromium 150，也不能证明它是当前常见设备。尤其是大多数历史记录带有 `webdriver=true`，这是实验采集环境特征，不能作为当前模板的生成分布。
-
-因此风险数据在本项目中的用途限定为：
-
-- 检查字段是否存在明显跨平台矛盾；
-- 复核 parser 对历史字段名和值域的兼容性；
-- 设计防御性一致性规则和测试输入。
-
-禁止把这些记录用于抽样生成“更像真人”的指纹、推断当前地区人口画像或优化第三方反滥用规避。
-
-## 已确认正确的设计
-
-1. UA、Client Hints、`navigator.platform` 和 `navigator.appVersion` 使用同一个 Chromium 150 / Linux x86_64 基线。
-2. model 中的 viewport 与 payload 中的 screen 同为 1920×1080，Agent 同时设置窗口尺寸，避免只改 JS screen。
-3. 自动生成只在创建时执行一次；Fingerprint 和 Profile 在一个数据库事务内创建。
-4. 扰动 seed 和 media IDs 在创建时由初始 `data_key` 分域派生并持久化，后续重置浏览器存储不会改变 Fingerprint。
-5. 固定模板不绑定地区；语言和时区由代理 GeoIP 动态覆盖。
-6. WebRTC、QUIC、系统代理环境变量和 Chromium proxy 参数由 Agent 强制管理，模板不能绕过。
-7. `navigator.webdriver=false` 与正式验收配置一致；没有复制历史受控数据中偏高的 automation 信号。
-8. Agent 强制把同一配置快照以 path 和 inline JSON 同时传给 browser process 与 renderer，旧记录不能覆盖受控值。
+它不进入自动模板随机生成逻辑，也不用于拼接“更像真人”的设备画像。
 
 ## 仍然存在的边界
 
-### 1. Runtime 只按 key 广告，尚无版本证明
+### Runtime 尚无版本证明
 
-控制面当前只知道 Agent 上报的 runtime key，不知道该 key 对应二进制的版本和 SHA-256。自动模板因此依赖运维保证 runtime 映射正确。如果同一 key 被改指向普通 Chrome、其他 Chromium 版本或不同 patch stack，服务端仍会生成 Chromium 150 模板。
+控制面当前只收到 runtime key，没有对应二进制的 `version`、SHA-256 和 capability manifest。如果 Agent 将同一个 key 改指向其他 Chrome，控制面仍会生成 Chromium 150 模板。后续应让心跳上报每个 runtime 的版本、哈希和 capability set，再由控制面匹配模板。
 
-建议后续让 Agent 心跳上报每个 runtime 的 `version`、`sha256` 和 capability set，控制面只在匹配模板声明时开放自动生成。
+### 尚未把完整 probe 内建到 Agent
 
-### 2. new-api 尚未运行完整 fingerprint probe
+Formal 门禁验证了 64 个 required-match 字段和 73 个稳定字段。new-api Agent 当前只强制代理，并预检语言和时区；完整 fingerprint probe 仍是发布/运维验收工具，而不是每次 OAuth 的前置步骤。
 
-Transfigure Browser 正式门禁对同一 Profile 连续 3 次验证了 73 个稳定字段和 64 个 required-match 字段。new-api Browser Agent 当前只执行代理出口、语言和时区预检，没有采集 UA/CH、screen、hardware、Canvas、WebGL、Audio、fonts、media、storage 等完整报告。
+### Noise seed 的运行时有效空间为 32 bit
 
-因此“配置已生成”不能等价为“所有网页可见字段已验证”。建议把 fingerprint probe 作为 Agent 的可选验收任务，保存结构化结果和模板版本，不把原始敏感网络地址写入日志。
+new-api 保存的是 256-bit HMAC 字符串，但 Chromium parser 最终用 FNV-1a 压缩成单个 32-bit seed。单个表面的生日碰撞概率约为：1,000 个 Profile 时 0.0116%，10,000 个时 1.16%，65,536 个时 39.35%。Canvas、WebGL 和 Audio 使用独立分域值，因此三个表面同时碰撞的概率远低于单个表面。
 
-### 3. 字体 family allowlist 不会安装字体
+常规小规模部署可接受；如果单集群接近一万个自动 Profile，应增加 seed 碰撞索引，或升级 runtime 的 seed 表示，不应假定 256-bit 输入等于 256-bit 有效扰动空间。
 
-当前 Chromium patch 只按 family 过滤可见字体；new-api Agent 没有接入 Transfigure Browser post-formal 的 FontBundle materializer。正式验收环境中 6 个声明 family 只有 Noto Color Emoji 被 Local Font Access 实际枚举，其余缺失被正式报告记录为允许的已知限制。
+### 原生表面依赖 Agent 稳定
 
-所以模板中的 fonts 表示“最多允许暴露这些 family”，不是“宿主机一定存在这些字体文件”。需要精确字体文件一致性时，必须接入受控 FontBundle，不能只增加 JSON 名称。
+GPU 驱动、字体包、显示器和 Chromium 版本变化会改变原生表面。Profile 不应在没有显式迁移和重新验收的情况下换 Agent 或 runtime。
 
-### 4. Media device 目前主要控制身份元数据
+## 发布与验证规则
 
-固定模板能稳定覆盖 `kind/deviceId/groupId/label`，但 2026-07-18 正式 release 没有生成虚拟音视频内容流。new-api Agent 也未接入 post-formal `virtual_media`。依赖真实 `getUserMedia()` 内容的业务仍可能受宿主机硬件和权限影响。
-
-### 5. WebGPU 与 Network Information 有运行环境限制
-
-正式验收允许以下字段缺失：
-
-- Headless 场景中的 WebGPU surface 和 driver；
-- `navigator.connection.type`；
-- `navigator.connection.downlinkMax`。
-
-模板配置这些值不代表目标环境一定暴露对应 API。常规 OAuth 使用 headed Chromium，但验收和监控仍应区分 `match`、`missing` 与 `environment_limit`。
-
-### 6. 自动模板是固定设备族，不是人口采样器
-
-所有自动 Profile 共享同一个 Chromium/OS/CPU/GPU/screen 基线，只有 profile ID、Canvas/WebGL/Audio seed 和 media IDs 按 Profile 区分。这是为了可解释、可重复和可验收，不应扩展为从历史数据库随机拼接字段。
-
-## 发布与运维规则
-
-1. 模板内容变化时必须修改模板 ID，并新增精确回归断言。
-2. 不批量重写已有 Fingerprint；需要新模板时创建新 Profile 或显式迁移。
-3. runtime 只能指向已核对版本的 Formal Chromium，不能回退到系统 Chrome。
-4. 核心 Fingerprint 禁止保存 locale、timezone、language、country 或出口 IP。
-5. Profile 启动必须使用已绑定的托管代理，不允许直连回退；Profile 本身可以不绑定渠道并独立打开。
-6. Agent 必须强制传递 path 与 inline JSON 两种指纹配置，并拒绝 Fingerprint 自定义参数或环境覆盖。
-7. 生产上线前至少核对 Chromium `--version` 和 SHA-256；版本变化后重新执行 Transfigure fingerprint probe。
-8. 风险数据只用于防御性一致性和兼容性分析，不进入自动模板随机生成逻辑。
-
-## 最低验证清单
+1. 模板内容变化必须修改模板 ID；不批量重写既有 Fingerprint。
+2. runtime 只能指向已核对版本的 Formal Chromium，不能回退到系统 Chrome。
+3. 固定 Fingerprint 禁止保存 locale、timezone、language、country 或出口 IP。
+4. Agent 必须强制代理、WebRTC 策略、path + inline 配置，并禁止 CLI `--user-agent`。
+5. 生产部署前核对 Chromium 版本、SHA-256 和完整 fingerprint probe。
+6. 风险数据只用于防御性一致性分析，不参与模板采样。
 
 代码级门禁：
 
@@ -208,4 +195,4 @@ go test ./... -count=1
 sha256sum /android/transfigure-browser/runtime/formal-workspaces/chromium-150.0.7871.46-formal-20260717/out/Acceptance-20260718T033425Z/chrome
 ```
 
-网页可见验收应使用 `/android/transfigure-browser/tools/fingerprint-probe/`，至少覆盖正式报告中的 64 个 required-match 字段、同 Profile 重启稳定性、不同 Profile seed 差异、WebRTC 非 relay 地址为 0，以及地区覆盖与代理 GeoIP 一致。
+网页验收至少覆盖 UA/CH、screen、hardware、Canvas/WebGL/Audio 稳定性、不同 Profile seed 差异、五个 WebRTC 读取面非 relay 地址为 0，以及语言/时区与代理 GeoIP 一致。

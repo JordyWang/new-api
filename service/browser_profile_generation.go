@@ -13,8 +13,8 @@ import (
 )
 
 const (
-	generatedFingerprintTemplate  = "formal-150-linux-x86_64-20260718-v1"
-	generatedFingerprintUserAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.7871.46 Safari/537.36"
+	generatedFingerprintTemplate  = "formal-150-linux-x86_64-20260722-v2"
+	generatedFingerprintUserAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
 )
 
 type BrowserRuntimeOption struct {
@@ -89,62 +89,39 @@ func NewGeneratedBrowserFingerprint(profileName string, dataKey string, now int6
 	canvasSeed := common.GenerateHMACWithKey([]byte(dataKey), "canvas")
 	webglSeed := common.GenerateHMACWithKey([]byte(dataKey), "webgl")
 	audioSeed := common.GenerateHMACWithKey([]byte(dataKey), "audio")
-	mediaSeed := common.GenerateHMACWithKey([]byte(dataKey), "media")
 	profileCode := profileSeed[:16]
 
 	payload := map[string]any{
 		"profile_id": generatedFingerprintTemplate + "-" + profileCode,
 		"fingerprint": map[string]any{
-			"audio": map[string]any{"noise_seed": audioSeed},
-			"fonts": map[string]any{"families": []string{
-				"Arial", "Courier New", "Times New Roman", "Noto Sans", "Noto Serif", "Noto Color Emoji",
-			}},
-			"webgl": map[string]any{
-				"vendor":            "WebKit",
-				"renderer":          "WebKit WebGL",
-				"extensions":        []string{"EXT_color_buffer_float", "EXT_texture_filter_anisotropic", "OES_texture_float", "OES_texture_float_linear", "WEBGL_debug_renderer_info", "WEBGL_lose_context"},
-				"noise_seed":        webglSeed,
-				"unmasked_vendor":   "Google Inc. (Intel)",
-				"unmasked_renderer": "ANGLE (Intel, Mesa Intel(R) UHD Graphics 630, OpenGL 4.6)",
-			},
+			"audio":  map[string]any{"noise_seed": audioSeed},
+			"webgl":  map[string]any{"noise_seed": webglSeed},
 			"canvas": map[string]any{"noise_seed": canvasSeed},
 			"screen": map[string]any{
 				"width": 1920, "height": 1080, "avail_top": 0, "avail_left": 0,
 				"avail_width": 1920, "avail_height": 1040, "color_depth": 24,
 				"pixel_depth": 24, "device_scale_factor": 1,
 			},
-			"webgpu": map[string]any{
-				"device": "0x3e92", "driver": "Mesa Intel(R) UHD Graphics 630",
-				"vendor": "intel", "description": "Intel(R) UHD Graphics 630", "architecture": "gen-9",
-			},
-			"webrtc": map[string]any{"ip_handling_policy": "disable_non_proxied_udp"},
-			"battery": map[string]any{
-				"level": 1, "charging": true, "charging_time": 0, "discharging_time": 36000,
-			},
-			"plugins":  map[string]any{"pdf_viewer_enabled": true},
-			"storage":  map[string]any{"quota": 21474836480, "usage": 104857600, "persisted": false},
+			"webrtc":   map[string]any{"ip_handling_policy": "disable_non_proxied_udp"},
 			"hardware": map[string]any{"device_memory": 8, "hardware_concurrency": 8},
 			"navigator": map[string]any{
-				"online": true, "vendor": "Google Inc.", "product": "Gecko", "app_name": "Netscape",
+				"vendor": "Google Inc.", "product": "Gecko", "app_name": "Netscape",
 				"platform": "Linux x86_64", "vendor_sub": "", "app_version": strings.TrimPrefix(generatedFingerprintUserAgent, "Mozilla/"),
-				"product_sub": "20030107", "do_not_track": "unspecified", "app_code_name": "Mozilla",
-				"cookie_enabled": true, "max_touch_points": 0,
+				"product_sub": "20030107", "app_code_name": "Mozilla", "max_touch_points": 0,
 			},
 			"automation": map[string]any{"webdriver": false},
 			"user_agent": generatedFingerprintUserAgent,
 			"client_hints": map[string]any{
 				"wow64": false, "mobile": false, "bitness": "64", "platform": "Linux", "architecture": "x86",
 				"form_factors": []string{"Desktop"}, "full_version": "150.0.7871.46", "platform_version": "",
-				"brand_version_list":      []map[string]string{{"brand": "Chromium", "version": "150"}},
-				"brand_full_version_list": []map[string]string{{"brand": "Chromium", "version": "150.0.7871.46"}},
-			},
-			"media_devices": []map[string]string{
-				{"kind": "audioinput", "label": "Built-in Microphone", "group_id": mediaSeed + "-audio", "device_id": mediaSeed + "-audio-input"},
-				{"kind": "videoinput", "label": "HD Camera", "group_id": mediaSeed + "-video", "device_id": mediaSeed + "-video-input"},
-				{"kind": "audiooutput", "label": "Built-in Speakers", "group_id": mediaSeed + "-audio", "device_id": mediaSeed + "-audio-output"},
-			},
-			"network_information": map[string]any{
-				"rtt": 50, "type": "wifi", "downlink": 10, "save_data": false, "downlink_max": 100, "effective_type": "4g",
+				"brand_version_list": []map[string]string{
+					{"brand": "Not;A=Brand", "version": "8"},
+					{"brand": "Chromium", "version": "150"},
+				},
+				"brand_full_version_list": []map[string]string{
+					{"brand": "Not;A=Brand", "version": "8.0.0.0"},
+					{"brand": "Chromium", "version": "150.0.7871.46"},
+				},
 			},
 		},
 	}

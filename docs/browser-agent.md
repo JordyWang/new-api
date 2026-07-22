@@ -4,7 +4,7 @@ new-api 作为控制面统一管理 Browser Agent、公共代理、浏览器指�
 
 浏览器登录、OAuth 授权码交换、Token 刷新、Codex 用量查询和渠道中继请求都会使用同一条托管代理配置。该链路采用严格失败策略：代理、GeoIP 服务或浏览器指纹验证任一不可用时，OAuth 都会终止，不会降级为直连。
 
-Browser Agent 会在浏览器启动前通过托管代理查询出口 GeoIP，并由结果生成一次性的地区覆盖层：Locale 从出口国家语言列表中确定，Timezone 使用出口时区。固定指纹只保存 UA、操作系统、屏幕、硬件、Canvas、Audio、WebGL 等核心设备信息，不与国家或地区绑定。浏览器启动后，本地预检页会读取实际的 `navigator.language`、`navigator.languages` 和 `Intl.DateTimeFormat().resolvedOptions().timeZone`；只有实际值与本次代理地区覆盖一致时才会进入 OpenAI 授权页。授权码交换前还会通过同一代理复验出口身份，出口发生变化时流程会失败。
+Browser Agent 会在浏览器启动前通过托管代理查询出口 GeoIP，并由结果生成一次性的地区覆盖层：Locale 从出口国家语言列表中确定，Timezone 使用出口时区。固定指纹只保存 UA/Client Hints、操作系统、屏幕、硬件和 Canvas/Audio/WebGL seed 等核心信息，不与国家或地区绑定；GPU、字体、Battery、Storage、Network Information 和媒体设备由绑定 Agent 上的 Chromium 原生提供。浏览器启动后，本地预检页会读取实际的 `navigator.language`、`navigator.languages` 和 `Intl.DateTimeFormat().resolvedOptions().timeZone`；只有实际值与本次代理地区覆盖一致时才会进入 OpenAI 授权页。授权码交换前还会通过同一代理复验出口身份，出口发生变化时流程会失败。
 
 上述检查能够保证受管流程不会在校验失败时继续，也能阻止启动参数、环境变量和渠道配置绕过代理。但第三方代理是否为每个连接固定同一出口，最终由代理服务决定。若代理会随机分配不同国家或时区的出口，流程会在检测到不匹配时失败；若业务要求出口 IP 本身始终相同，必须使用带粘性会话的代理账号或固定出口代理。
 
@@ -75,7 +75,7 @@ GeoIP 请求只通过 Agent 创建的本地转发代理发出，没有直连回�
 4. 新建 Codex 渠道时，可以直接选择“自动创建固定 Profile 和指纹”，再选择在线 Agent 的运行时和托管代理。控制面会在启动 OAuth 前创建 Profile；Agent 运行时按已绑定 Profile 数最少优先排列，代理按 Profile 数、渠道账号数和 ID 依次排列。已有渠道仍选择现有 Profile，避免改变既有绑定。
 5. 点击“打开浏览器登录”。渠道与 Profile 在绑定后保持一对一；新渠道保存时，OAuth 使用的 Profile 会在同一数据库事务内与渠道绑定。
 
-自动生成的固定指纹采用 2026-07-18 正式验收的 Formal Chromium 150 / Linux x86_64 模板，包含相互一致的 UA、Client Hints、屏幕、硬件、Canvas、Audio、WebGL 和媒体设备信息。Canvas、Audio、WebGL 等扰动 seed 在创建时由 Profile 的初始 `data_key` 分域派生并随 Fingerprint 持久化，因此同一个 Profile 多次打开或重置浏览器存储时都不会重新随机。模板不保存 Locale、Timezone、语言、国家或出口 IP；这些地区信息仍在每次启动时由当前托管代理的 GeoIP 结果注入。证据来源、历史风险数据边界、已知限制和发布门禁见[自动指纹模板审计](browser-fingerprint-template-audit.md)。
+自动生成的固定指纹采用 Formal Chromium 150 / Linux x86_64 的 `v2` 模板。UA 使用该二进制默认的 reduced 形式，Client Hints 同时保留默认 GREASE brand 和 Chromium full version。Canvas、Audio、WebGL 扰动 seed 在创建时由 Profile 的初始 `data_key` 分域派生并随 Fingerprint 持久化，因此同一个 Profile 多次打开或重置浏览器存储时都不会重新随机。模板不写死 GPU 型号、字体、Battery、Storage、Network Information 或媒体设备，也不保存 Locale、Timezone、语言、国家或出口 IP；这些字段分别由绑定 runtime 和每次启动时的代理 GeoIP 提供。证据来源、运行时对照、历史风险数据边界和已知限制见[自动指纹模板审计](browser-fingerprint-template-audit.md)。
 
 OAuth Token 不会返回前端页面。登录成功后，页面只展示 email、account ID、plan 和凭证过期时间。新建渠道时，已完成的 OAuth 流程需要在页面显示的截止时间前保存；编辑已有渠道时，凭证会在 OAuth 完成后直接更新到该渠道。
 
@@ -90,7 +90,7 @@ TRANSFIGURE_FINGERPRINT_CONFIG=<profile>/.new-api/fingerprint.json
 TRANSFIGURE_FINGERPRINT_CONFIG_JSON=<base64>
 ```
 
-路径供 browser process 使用，内联快照保证 Blink renderer 在 sandbox 下仍能取得完全相同的配置。Agent 会忽略旧 Fingerprint 中已有的这两个启动参数，再追加自己控制的值，以兼容现存记录并阻止服务端覆盖。
+路径供 browser process 使用，内联快照保证 Blink renderer 在 sandbox 下仍能取得完全相同的配置。Agent 会忽略旧 Fingerprint 中已有的这两个启动参数，再追加自己控制的值，以兼容现存记录并阻止服务端覆盖。数据库的 User Agent 字段也会被写入这份受控 JSON；Agent 不传 Chromium `--user-agent`，因为该参数会让 Chromium 150 在生成高熵 Client Hints 前提前返回空值。
 
 可使用以下模板变量：
 
@@ -107,7 +107,7 @@ TRANSFIGURE_FINGERPRINT_CONFIG_JSON=<base64>
 
 `{locale}` 和 `{timezone}` 来自本次代理 GeoIP 地区覆盖，不属于固定指纹。`{authorize_url}` 和 `{oauth_preflight_url}` 都指向 Agent 的本地浏览器预检页。真正的 OpenAI 授权地址只会在实际语言和时区验证成功后由预检页取得。
 
-Browser Agent 会把固定核心与本次代理地区覆盖合并，再以权限 `0600` 写入 Profile 目录下的 `.new-api/fingerprint.json`；数据库中的核心指纹不会因此改变。Agent 会强制设置 Profile、指纹配置路径与内联快照、代理、语言、时区、视口、WebRTC 和 QUIC 相关参数，并强制应用指纹中已配置的 User Agent；指纹模板不能覆盖这些参数、代理绕过规则或远程调试参数。外部地址全部走托管代理，仅 OAuth 所需的本机预检和回调地址允许直连回环接口。
+Browser Agent 会把固定核心、数据库 User Agent 与本次代理地区覆盖合并，再以权限 `0600` 写入 Profile 目录下的 `.new-api/fingerprint.json`；数据库中的核心指纹不会因此改变。Agent 会强制设置 Profile、指纹配置路径与内联快照、代理、语言、时区、视口、WebRTC 和 QUIC 相关参数；指纹模板不能覆盖这些参数、`--user-agent`、代理绕过规则或远程调试参数。外部地址全部走托管代理，仅 OAuth 所需的本机预检和回调地址允许直连回环接口。
 
 环境变量配置是 JSON 字符串映射。出于安全考虑，Agent 会拒绝 `PATH`、`HOME`、`LD_PRELOAD`、`DYLD_*`、`NODE_OPTIONS` 等可改变程序加载行为的变量，也不允许覆盖 `TZ`、`LANG`、`LANGUAGE`、`LC_*`、`HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`、`NO_PROXY` 和两个 `TRANSFIGURE_FINGERPRINT_CONFIG*` 变量。这些值由 Agent 按已验证的代理地区覆盖、本地转发代理和当前配置快照统一设置。
 

@@ -79,6 +79,7 @@ func TestManagedBrowserUsesProxyGeoOverlay(t *testing.T) {
 	assert.Contains(t, args, "--force-time-zone-for-testing=Asia/Singapore")
 	assert.Contains(t, args, "--force-webrtc-ip-handling-policy=disable_non_proxied_udp")
 	assert.Contains(t, args, "--disable-quic")
+	assert.NotContains(t, args, "--user-agent=managed-agent")
 	assert.Contains(t, args, "--transfigure-fingerprint-config=/profiles/test/fingerprint.json")
 	assert.Contains(t, args, "--transfigure-fingerprint-config-json="+fingerprintConfigJSON)
 	assert.Equal(t, preflightURL, args[len(args)-1])
@@ -229,7 +230,7 @@ func TestStandaloneBrowserUsesManagedProfileProxyFingerprintAndPreflight(t *test
 	require.NoError(t, err)
 	assert.Contains(t, args, "--user-data-dir=/profiles/"+launch.Profile.DataKey)
 	assert.Contains(t, args, "--proxy-server=http://127.0.0.1:3000")
-	assert.Contains(t, args, "--user-agent=standalone-agent")
+	assert.NotContains(t, args, "--user-agent=standalone-agent")
 	assert.Equal(t, preflightURL, args[len(args)-1])
 	assert.NotContains(t, args, launch.StartURL)
 
@@ -265,17 +266,19 @@ func TestFingerprintFileCombinesFixedCoreWithProxyGeoOverlay(t *testing.T) {
 		"profile_id":"fixed-core-v1",
 		"geo_overlay":{"country_code":"US"},
 		"fingerprint":{
+			"user_agent":"stale-agent",
 			"accept_language":"en-US,en",
 			"timezone":"America/Los_Angeles",
 			"canvas":{"noise_seed":"fixed-core"}
 		}
-	}`, geo)
+	}`, "managed-agent", geo)
 	require.NoError(t, err)
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
 	var rendered struct {
 		ProfileId   string `json:"profile_id"`
 		Fingerprint struct {
+			UserAgent      string            `json:"user_agent"`
 			AcceptLanguage string            `json:"accept_language"`
 			Timezone       string            `json:"timezone"`
 			Canvas         map[string]string `json:"canvas"`
@@ -289,6 +292,7 @@ func TestFingerprintFileCombinesFixedCoreWithProxyGeoOverlay(t *testing.T) {
 	}
 	require.NoError(t, common.Unmarshal(data, &rendered))
 	assert.Equal(t, "fixed-core-v1", rendered.ProfileId)
+	assert.Equal(t, "managed-agent", rendered.Fingerprint.UserAgent)
 	assert.Equal(t, "fixed-core", rendered.Fingerprint.Canvas["noise_seed"])
 	assert.Equal(t, "en-SG,en,cmn", rendered.Fingerprint.AcceptLanguage)
 	assert.Equal(t, "Asia/Singapore", rendered.Fingerprint.Timezone)
@@ -313,7 +317,7 @@ func TestFingerprintFilePreservesFlatCoreWithProxyGeoOverlay(t *testing.T) {
 		"canvas":{"noise_seed":"flat-fixed-core"},
 		"hardware":{"hardware_concurrency":8},
 		"navigator":{"language":"en-US","languages":["en-US","en"],"platform":"Linux x86_64"}
-	}`, geo)
+	}`, "flat-managed-agent", geo)
 	require.NoError(t, err)
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
@@ -321,6 +325,7 @@ func TestFingerprintFilePreservesFlatCoreWithProxyGeoOverlay(t *testing.T) {
 	require.NoError(t, common.Unmarshal(data, &rendered))
 
 	assert.NotContains(t, rendered, "fingerprint")
+	assert.Equal(t, "flat-managed-agent", rendered["user_agent"])
 	assert.Equal(t, "en-SG,en,cmn", rendered["accept_language"])
 	assert.Equal(t, "Asia/Singapore", rendered["timezone"])
 	assert.Equal(t, map[string]any{"noise_seed": "flat-fixed-core"}, rendered["canvas"])
@@ -341,7 +346,7 @@ func TestFingerprintFileRejectsNullPayload(t *testing.T) {
 		AcceptLanguage: "en-SG,en",
 	}
 
-	_, err := writeFingerprintPayload(t.TempDir(), `null`, geo)
+	_, err := writeFingerprintPayload(t.TempDir(), `null`, "managed-agent", geo)
 
 	assert.ErrorContains(t, err, "JSON object")
 }

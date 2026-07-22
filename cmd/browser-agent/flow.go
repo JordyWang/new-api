@@ -84,7 +84,7 @@ func executeOAuthFlow(parent context.Context, client *agentClient, instanceId st
 		proxyIdentity.Timezone,
 		proxyIdentity.Locale,
 	)
-	fingerprintFile, err := writeFingerprintPayload(profileDir, claim.Fingerprint.Payload, proxyIdentity)
+	fingerprintFile, err := writeFingerprintPayload(profileDir, claim.Fingerprint.Payload, claim.Fingerprint.UserAgent, proxyIdentity)
 	if err != nil {
 		return err
 	}
@@ -241,7 +241,7 @@ func executeBrowserLaunch(parent context.Context, client *agentClient, instanceI
 		proxyIdentity.Timezone,
 		claim.LaunchId,
 	)
-	fingerprintFile, err := writeFingerprintPayload(profileDir, claim.Fingerprint.Payload, proxyIdentity)
+	fingerprintFile, err := writeFingerprintPayload(profileDir, claim.Fingerprint.Payload, claim.Fingerprint.UserAgent, proxyIdentity)
 	if err != nil {
 		return err
 	}
@@ -410,7 +410,7 @@ func prepareProfileDirectory(root string, claim *browseragentapi.CodexOAuthClaim
 	return directory, func() {}, nil
 }
 
-func writeFingerprintPayload(profileDir string, payload string, geo *proxyGeoIdentity) (string, error) {
+func writeFingerprintPayload(profileDir string, payload string, userAgent string, geo *proxyGeoIdentity) (string, error) {
 	if geo == nil || geo.Locale == "" || geo.Timezone == "" || geo.AcceptLanguage == "" {
 		return "", errors.New("proxy geography overlay is incomplete")
 	}
@@ -438,6 +438,9 @@ func writeFingerprintPayload(profileDir string, payload string, geo *proxyGeoIde
 	if navigator, ok := fingerprint["navigator"].(map[string]any); ok {
 		delete(navigator, "language")
 		delete(navigator, "languages")
+	}
+	if userAgent = strings.TrimSpace(userAgent); userAgent != "" {
+		fingerprint["user_agent"] = userAgent
 	}
 	fingerprint["accept_language"] = geo.AcceptLanguage
 	fingerprint["timezone"] = geo.Timezone
@@ -526,9 +529,6 @@ func buildBrowserLaunchArgs(profileDir string, fingerprintFile string, fingerpri
 		"--no-first-run",
 		"--no-default-browser-check",
 	)
-	if claim.Fingerprint.UserAgent != "" {
-		args = append(args, "--user-agent="+claim.Fingerprint.UserAgent)
-	}
 	if geo.Locale != "" {
 		args = append(args, "--lang="+geo.Locale)
 	}
