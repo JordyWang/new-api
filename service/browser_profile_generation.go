@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,8 +14,9 @@ import (
 )
 
 const (
-	generatedFingerprintTemplate  = "formal-150-linux-x86_64-20260722-v2"
-	generatedFingerprintUserAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
+	generatedFingerprintTemplate         = "formal-150-desktop-20260722-v4"
+	generatedFingerprintWindowsUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
+	generatedFingerprintMacOSUserAgent   = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
 )
 
 type BrowserRuntimeOption struct {
@@ -86,17 +88,31 @@ func NewGeneratedBrowserFingerprint(profileName string, dataKey string, now int6
 		return nil, errors.New("browser profile data key is required for fingerprint generation")
 	}
 	profileSeed := common.GenerateHMACWithKey([]byte(dataKey), generatedFingerprintTemplate)
-	canvasSeed := common.GenerateHMACWithKey([]byte(dataKey), "canvas")
+	platformSelector, err := strconv.ParseUint(profileSeed[:2], 16, 8)
+	if err != nil {
+		return nil, err
+	}
+	profilePlatform := "windows-x86_64"
+	userAgent := generatedFingerprintWindowsUserAgent
+	clientPlatform := "Windows"
+	clientPlatformVersion := "19.0.0"
+	navigatorPlatform := "Win32"
+	// Keep the platform stable for the lifetime of the Profile. Automatic
+	// generation uses an 80/20 Windows/macOS split and does not emit Linux.
+	if platformSelector%5 == 0 {
+		profilePlatform = "macos-x86_64"
+		userAgent = generatedFingerprintMacOSUserAgent
+		clientPlatform = "macOS"
+		clientPlatformVersion = "15.7.6"
+		navigatorPlatform = "MacIntel"
+	}
 	webglSeed := common.GenerateHMACWithKey([]byte(dataKey), "webgl")
-	audioSeed := common.GenerateHMACWithKey([]byte(dataKey), "audio")
 	profileCode := profileSeed[:16]
 
 	payload := map[string]any{
-		"profile_id": generatedFingerprintTemplate + "-" + profileCode,
+		"profile_id": generatedFingerprintTemplate + "-" + profilePlatform + "-" + profileCode,
 		"fingerprint": map[string]any{
-			"audio":  map[string]any{"noise_seed": audioSeed},
-			"webgl":  map[string]any{"noise_seed": webglSeed},
-			"canvas": map[string]any{"noise_seed": canvasSeed},
+			"webgl": map[string]any{"noise_seed": webglSeed},
 			"screen": map[string]any{
 				"width": 1920, "height": 1080, "avail_top": 0, "avail_left": 0,
 				"avail_width": 1920, "avail_height": 1040, "color_depth": 24,
@@ -106,14 +122,14 @@ func NewGeneratedBrowserFingerprint(profileName string, dataKey string, now int6
 			"hardware": map[string]any{"device_memory": 8, "hardware_concurrency": 8},
 			"navigator": map[string]any{
 				"vendor": "Google Inc.", "product": "Gecko", "app_name": "Netscape",
-				"platform": "Linux x86_64", "vendor_sub": "", "app_version": strings.TrimPrefix(generatedFingerprintUserAgent, "Mozilla/"),
+				"platform": navigatorPlatform, "vendor_sub": "", "app_version": strings.TrimPrefix(userAgent, "Mozilla/"),
 				"product_sub": "20030107", "app_code_name": "Mozilla", "max_touch_points": 0,
 			},
 			"automation": map[string]any{"webdriver": false},
-			"user_agent": generatedFingerprintUserAgent,
+			"user_agent": userAgent,
 			"client_hints": map[string]any{
-				"wow64": false, "mobile": false, "bitness": "64", "platform": "Linux", "architecture": "x86",
-				"form_factors": []string{"Desktop"}, "full_version": "150.0.7871.46", "platform_version": "",
+				"wow64": false, "mobile": false, "bitness": "64", "platform": clientPlatform, "architecture": "x86",
+				"form_factors": []string{"Desktop"}, "full_version": "150.0.7871.46", "platform_version": clientPlatformVersion,
 				"brand_version_list": []map[string]string{
 					{"brand": "Not;A=Brand", "version": "8"},
 					{"brand": "Chromium", "version": "150"},
@@ -140,7 +156,7 @@ func NewGeneratedBrowserFingerprint(profileName string, dataKey string, now int6
 	}
 	return &model.BrowserFingerprint{
 		Name:        fingerprintName,
-		UserAgent:   generatedFingerprintUserAgent,
+		UserAgent:   userAgent,
 		ViewportW:   1920,
 		ViewportH:   1080,
 		Payload:     string(encodedPayload),

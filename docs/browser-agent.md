@@ -4,7 +4,7 @@ new-api 作为控制面统一管理 Browser Agent、公共代理、浏览器指�
 
 浏览器登录、OAuth 授权码交换、Token 刷新、Codex 用量查询和渠道中继请求都会使用同一条托管代理配置。该链路采用严格失败策略：代理、GeoIP 服务或浏览器指纹验证任一不可用时，OAuth 都会终止，不会降级为直连。
 
-Browser Agent 会在浏览器启动前通过托管代理查询出口 GeoIP，并由结果生成一次性的地区覆盖层：Locale 从出口国家语言列表中确定，Timezone 使用出口时区。固定指纹只保存 UA/Client Hints、操作系统、屏幕、硬件和 Canvas/Audio/WebGL seed 等核心信息，不与国家或地区绑定；GPU、字体、Battery、Storage、Network Information 和媒体设备由绑定 Agent 上的 Chromium 原生提供。浏览器启动后，本地预检页会读取实际的 `navigator.language`、`navigator.languages` 和 `Intl.DateTimeFormat().resolvedOptions().timeZone`；只有实际值与本次代理地区覆盖一致时才会进入 OpenAI 授权页。授权码交换前还会通过同一代理复验出口身份，出口发生变化时流程会失败。
+Browser Agent 会在浏览器启动前通过托管代理查询出口 GeoIP，并由结果生成一次性的地区覆盖层：Locale 从出口国家语言列表中确定，Timezone 使用出口时区。固定指纹只保存 UA/Client Hints、操作系统、屏幕、硬件和 WebGL seed 等核心信息，不与国家或地区绑定；Canvas、Audio、GPU、字体、Battery、Storage、Network Information 和媒体设备由绑定 Agent 上的 Chromium 原生提供。浏览器启动后，本地预检页会读取实际的 `navigator.language`、`navigator.languages` 和 `Intl.DateTimeFormat().resolvedOptions().timeZone`；只有实际值与本次代理地区覆盖一致时才会进入 OpenAI 授权页。授权码交换前还会通过同一代理复验出口身份，出口发生变化时流程会失败。
 
 上述检查能够保证受管流程不会在校验失败时继续，也能阻止启动参数、环境变量和渠道配置绕过代理。但第三方代理是否为每个连接固定同一出口，最终由代理服务决定。若代理会随机分配不同国家或时区的出口，流程会在检测到不匹配时失败；若业务要求出口 IP 本身始终相同，必须使用带粘性会话的代理账号或固定出口代理。
 
@@ -75,7 +75,7 @@ GeoIP 请求只通过 Agent 创建的本地转发代理发出，没有直连回�
 4. 新建 Codex 渠道时，可以直接选择“自动创建固定 Profile 和指纹”，再选择在线 Agent 的运行时和托管代理。控制面会在启动 OAuth 前创建 Profile；Agent 运行时按已绑定 Profile 数最少优先排列，代理按 Profile 数、渠道账号数和 ID 依次排列。已有渠道仍选择现有 Profile，避免改变既有绑定。
 5. 点击“打开浏览器登录”。渠道与 Profile 在绑定后保持一对一；新渠道保存时，OAuth 使用的 Profile 会在同一数据库事务内与渠道绑定。
 
-自动生成的固定指纹采用 Formal Chromium 150 / Linux x86_64 的 `v2` 模板。UA 使用该二进制默认的 reduced 形式，Client Hints 同时保留默认 GREASE brand 和 Chromium full version。Canvas、Audio、WebGL 扰动 seed 在创建时由 Profile 的初始 `data_key` 分域派生并随 Fingerprint 持久化，因此同一个 Profile 多次打开或重置浏览器存储时都不会重新随机。模板不写死 GPU 型号、字体、Battery、Storage、Network Information 或媒体设备，也不保存 Locale、Timezone、语言、国家或出口 IP；这些字段分别由绑定 runtime 和每次启动时的代理 GeoIP 提供。证据来源、运行时对照、历史风险数据边界和已知限制见[自动指纹模板审计](browser-fingerprint-template-audit.md)。
+自动生成的固定指纹采用 Formal Chromium 150 的 `v4` 桌面模板。Profile 创建时根据初始 `data_key` 稳定选择 Windows 11 或 macOS 身份，比例为 80%/20%；自动生成不再产生 Linux 身份，同一个 Profile 多次启动也不会切换平台。UA 使用 Chromium 的 reduced 形式，Client Hints 同时保留默认 GREASE brand 和 Chromium full version。WebGL 扰动 seed 在创建时由同一个 `data_key` 派生并随 Fingerprint 持久化。Canvas 和 Audio 不注入噪声，避免检测站将函数输出识别为人工修改。模板不写死 GPU 型号、字体、Battery、Storage、Network Information 或媒体设备，也不保存 Locale、Timezone、语言、国家或出口 IP；这些字段分别由绑定 runtime 和每次启动时的代理 GeoIP 提供。证据来源、运行时对照、历史风险数据边界和已知限制见[自动指纹模板审计](browser-fingerprint-template-audit.md)。
 
 OAuth Token 不会返回前端页面。登录成功后，页面只展示 email、account ID、plan 和凭证过期时间。新建渠道时，已完成的 OAuth 流程需要在页面显示的截止时间前保存；编辑已有渠道时，凭证会在 OAuth 完成后直接更新到该渠道。
 

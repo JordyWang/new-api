@@ -1,6 +1,7 @@
 package service
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -22,7 +23,8 @@ func TestGeneratedBrowserFingerprintIsStableAndRegionIndependent(t *testing.T) {
 
 	assert.Equal(t, first.Payload, second.Payload)
 	assert.NotEqual(t, first.Payload, different.Payload)
-	assert.Equal(t, "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36", first.UserAgent)
+	assert.Equal(t, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36", first.UserAgent)
+	assert.NotContains(t, first.UserAgent, "Linux")
 	assert.Equal(t, `[]`, first.LaunchArgs)
 
 	var payload map[string]any
@@ -39,105 +41,139 @@ func TestGeneratedBrowserFingerprintIsStableAndRegionIndependent(t *testing.T) {
 }
 
 func TestGeneratedBrowserFingerprintMatchesManagedChromium150Contract(t *testing.T) {
-	fingerprint, err := NewGeneratedBrowserFingerprint("managed profile", "managed-profile-key", time.Now().Unix())
-	require.NoError(t, err)
-
 	type brandVersion struct {
 		Brand   string `json:"brand"`
 		Version string `json:"version"`
 	}
-	var payload struct {
-		ProfileId   string `json:"profile_id"`
-		Fingerprint struct {
-			UserAgent   string `json:"user_agent"`
-			ClientHints struct {
-				Platform             string         `json:"platform"`
-				PlatformVersion      string         `json:"platform_version"`
-				Architecture         string         `json:"architecture"`
-				Bitness              string         `json:"bitness"`
-				FullVersion          string         `json:"full_version"`
-				FormFactors          []string       `json:"form_factors"`
-				Mobile               bool           `json:"mobile"`
-				Wow64                bool           `json:"wow64"`
-				BrandVersionList     []brandVersion `json:"brand_version_list"`
-				BrandFullVersionList []brandVersion `json:"brand_full_version_list"`
-			} `json:"client_hints"`
-			Navigator struct {
-				AppVersion string `json:"app_version"`
-				Platform   string `json:"platform"`
-				Vendor     string `json:"vendor"`
-				Product    string `json:"product"`
-			} `json:"navigator"`
-			Screen struct {
-				Width             int `json:"width"`
-				Height            int `json:"height"`
-				AvailableWidth    int `json:"avail_width"`
-				AvailableHeight   int `json:"avail_height"`
-				DeviceScaleFactor int `json:"device_scale_factor"`
-			} `json:"screen"`
-			Hardware struct {
-				DeviceMemory        int `json:"device_memory"`
-				HardwareConcurrency int `json:"hardware_concurrency"`
-			} `json:"hardware"`
-			WebRTC struct {
-				IPHandlingPolicy string `json:"ip_handling_policy"`
-			} `json:"webrtc"`
-		} `json:"fingerprint"`
+	testCases := []struct {
+		name              string
+		dataKey           string
+		profilePlatform   string
+		userAgent         string
+		clientPlatform    string
+		clientPlatformVer string
+		navigatorPlatform string
+	}{
+		{
+			name:              "Windows 11",
+			dataKey:           "windows-profile-key",
+			profilePlatform:   "windows-x86_64",
+			userAgent:         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
+			clientPlatform:    "Windows",
+			clientPlatformVer: "19.0.0",
+			navigatorPlatform: "Win32",
+		},
+		{
+			name:              "macOS",
+			dataKey:           "macos-profile-key",
+			profilePlatform:   "macos-x86_64",
+			userAgent:         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
+			clientPlatform:    "macOS",
+			clientPlatformVer: "15.7.6",
+			navigatorPlatform: "MacIntel",
+		},
 	}
-	require.NoError(t, common.UnmarshalJsonStr(fingerprint.Payload, &payload))
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			fingerprint, err := NewGeneratedBrowserFingerprint("managed profile", testCase.dataKey, time.Now().Unix())
+			require.NoError(t, err)
 
-	assert.Regexp(t, `^formal-150-linux-x86_64-20260722-v2-[0-9a-f]{16}$`, payload.ProfileId)
-	assert.Equal(t, "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36", payload.Fingerprint.UserAgent)
-	assert.Equal(t, "Linux", payload.Fingerprint.ClientHints.Platform)
-	assert.Empty(t, payload.Fingerprint.ClientHints.PlatformVersion)
-	assert.Equal(t, "x86", payload.Fingerprint.ClientHints.Architecture)
-	assert.Equal(t, "64", payload.Fingerprint.ClientHints.Bitness)
-	assert.Equal(t, "150.0.7871.46", payload.Fingerprint.ClientHints.FullVersion)
-	assert.Equal(t, []string{"Desktop"}, payload.Fingerprint.ClientHints.FormFactors)
-	assert.False(t, payload.Fingerprint.ClientHints.Mobile)
-	assert.False(t, payload.Fingerprint.ClientHints.Wow64)
-	assert.Equal(t, []brandVersion{
-		{Brand: "Not;A=Brand", Version: "8"},
-		{Brand: "Chromium", Version: "150"},
-	}, payload.Fingerprint.ClientHints.BrandVersionList)
-	assert.Equal(t, []brandVersion{
-		{Brand: "Not;A=Brand", Version: "8.0.0.0"},
-		{Brand: "Chromium", Version: "150.0.7871.46"},
-	}, payload.Fingerprint.ClientHints.BrandFullVersionList)
-	assert.Equal(t, "5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36", payload.Fingerprint.Navigator.AppVersion)
-	assert.Equal(t, "Linux x86_64", payload.Fingerprint.Navigator.Platform)
-	assert.Equal(t, "Google Inc.", payload.Fingerprint.Navigator.Vendor)
-	assert.Equal(t, "Gecko", payload.Fingerprint.Navigator.Product)
-	assert.Equal(t, 1920, payload.Fingerprint.Screen.Width)
-	assert.Equal(t, 1080, payload.Fingerprint.Screen.Height)
-	assert.Equal(t, 1920, payload.Fingerprint.Screen.AvailableWidth)
-	assert.Equal(t, 1040, payload.Fingerprint.Screen.AvailableHeight)
-	assert.Equal(t, 1, payload.Fingerprint.Screen.DeviceScaleFactor)
-	assert.Equal(t, 1920, fingerprint.ViewportW)
-	assert.Equal(t, 1080, fingerprint.ViewportH)
-	assert.Equal(t, 8, payload.Fingerprint.Hardware.DeviceMemory)
-	assert.Equal(t, 8, payload.Fingerprint.Hardware.HardwareConcurrency)
-	assert.Equal(t, "disable_non_proxied_udp", payload.Fingerprint.WebRTC.IPHandlingPolicy)
+			var payload struct {
+				ProfileId   string `json:"profile_id"`
+				Fingerprint struct {
+					UserAgent   string `json:"user_agent"`
+					ClientHints struct {
+						Platform             string         `json:"platform"`
+						PlatformVersion      string         `json:"platform_version"`
+						Architecture         string         `json:"architecture"`
+						Bitness              string         `json:"bitness"`
+						FullVersion          string         `json:"full_version"`
+						FormFactors          []string       `json:"form_factors"`
+						Mobile               bool           `json:"mobile"`
+						Wow64                bool           `json:"wow64"`
+						BrandVersionList     []brandVersion `json:"brand_version_list"`
+						BrandFullVersionList []brandVersion `json:"brand_full_version_list"`
+					} `json:"client_hints"`
+					Navigator struct {
+						AppVersion string `json:"app_version"`
+						Platform   string `json:"platform"`
+						Vendor     string `json:"vendor"`
+						Product    string `json:"product"`
+					} `json:"navigator"`
+					Screen struct {
+						Width             int `json:"width"`
+						Height            int `json:"height"`
+						AvailableWidth    int `json:"avail_width"`
+						AvailableHeight   int `json:"avail_height"`
+						DeviceScaleFactor int `json:"device_scale_factor"`
+					} `json:"screen"`
+					Hardware struct {
+						DeviceMemory        int `json:"device_memory"`
+						HardwareConcurrency int `json:"hardware_concurrency"`
+					} `json:"hardware"`
+					WebRTC struct {
+						IPHandlingPolicy string `json:"ip_handling_policy"`
+					} `json:"webrtc"`
+				} `json:"fingerprint"`
+			}
+			require.NoError(t, common.UnmarshalJsonStr(fingerprint.Payload, &payload))
 
-	var untypedPayload map[string]any
-	require.NoError(t, common.UnmarshalJsonStr(fingerprint.Payload, &untypedPayload))
-	fingerprintPayload, ok := untypedPayload["fingerprint"].(map[string]any)
-	require.True(t, ok)
-	for _, browserNativeField := range []string{
-		"battery", "fonts", "media_devices", "network_information", "storage", "webgpu",
-	} {
-		assert.NotContains(t, fingerprintPayload, browserNativeField)
-	}
-	webgl, ok := fingerprintPayload["webgl"].(map[string]any)
-	require.True(t, ok)
-	assert.NotEmpty(t, webgl["noise_seed"])
-	for _, nativeGPUField := range []string{"extensions", "renderer", "unmasked_renderer", "unmasked_vendor", "vendor"} {
-		assert.NotContains(t, webgl, nativeGPUField)
-	}
-	navigator, ok := fingerprintPayload["navigator"].(map[string]any)
-	require.True(t, ok)
-	for _, dynamicNavigatorField := range []string{"cookie_enabled", "do_not_track", "online"} {
-		assert.NotContains(t, navigator, dynamicNavigatorField)
+			assert.Regexp(t, `^formal-150-desktop-20260722-v4-`+testCase.profilePlatform+`-[0-9a-f]{16}$`, payload.ProfileId)
+			assert.Equal(t, testCase.userAgent, fingerprint.UserAgent)
+			assert.Equal(t, testCase.userAgent, payload.Fingerprint.UserAgent)
+			assert.NotContains(t, payload.Fingerprint.UserAgent, "Linux")
+			assert.Equal(t, testCase.clientPlatform, payload.Fingerprint.ClientHints.Platform)
+			assert.Equal(t, testCase.clientPlatformVer, payload.Fingerprint.ClientHints.PlatformVersion)
+			assert.Equal(t, "x86", payload.Fingerprint.ClientHints.Architecture)
+			assert.Equal(t, "64", payload.Fingerprint.ClientHints.Bitness)
+			assert.Equal(t, "150.0.7871.46", payload.Fingerprint.ClientHints.FullVersion)
+			assert.Equal(t, []string{"Desktop"}, payload.Fingerprint.ClientHints.FormFactors)
+			assert.False(t, payload.Fingerprint.ClientHints.Mobile)
+			assert.False(t, payload.Fingerprint.ClientHints.Wow64)
+			assert.Equal(t, []brandVersion{
+				{Brand: "Not;A=Brand", Version: "8"},
+				{Brand: "Chromium", Version: "150"},
+			}, payload.Fingerprint.ClientHints.BrandVersionList)
+			assert.Equal(t, []brandVersion{
+				{Brand: "Not;A=Brand", Version: "8.0.0.0"},
+				{Brand: "Chromium", Version: "150.0.7871.46"},
+			}, payload.Fingerprint.ClientHints.BrandFullVersionList)
+			assert.Equal(t, strings.TrimPrefix(testCase.userAgent, "Mozilla/"), payload.Fingerprint.Navigator.AppVersion)
+			assert.Equal(t, testCase.navigatorPlatform, payload.Fingerprint.Navigator.Platform)
+			assert.Equal(t, "Google Inc.", payload.Fingerprint.Navigator.Vendor)
+			assert.Equal(t, "Gecko", payload.Fingerprint.Navigator.Product)
+			assert.Equal(t, 1920, payload.Fingerprint.Screen.Width)
+			assert.Equal(t, 1080, payload.Fingerprint.Screen.Height)
+			assert.Equal(t, 1920, payload.Fingerprint.Screen.AvailableWidth)
+			assert.Equal(t, 1040, payload.Fingerprint.Screen.AvailableHeight)
+			assert.Equal(t, 1, payload.Fingerprint.Screen.DeviceScaleFactor)
+			assert.Equal(t, 1920, fingerprint.ViewportW)
+			assert.Equal(t, 1080, fingerprint.ViewportH)
+			assert.Equal(t, 8, payload.Fingerprint.Hardware.DeviceMemory)
+			assert.Equal(t, 8, payload.Fingerprint.Hardware.HardwareConcurrency)
+			assert.Equal(t, "disable_non_proxied_udp", payload.Fingerprint.WebRTC.IPHandlingPolicy)
+
+			var untypedPayload map[string]any
+			require.NoError(t, common.UnmarshalJsonStr(fingerprint.Payload, &untypedPayload))
+			fingerprintPayload, ok := untypedPayload["fingerprint"].(map[string]any)
+			require.True(t, ok)
+			for _, browserNativeField := range []string{
+				"audio", "battery", "canvas", "fonts", "media_devices", "network_information", "storage", "webgpu",
+			} {
+				assert.NotContains(t, fingerprintPayload, browserNativeField)
+			}
+			webgl, ok := fingerprintPayload["webgl"].(map[string]any)
+			require.True(t, ok)
+			assert.NotEmpty(t, webgl["noise_seed"])
+			for _, nativeGPUField := range []string{"extensions", "renderer", "unmasked_renderer", "unmasked_vendor", "vendor"} {
+				assert.NotContains(t, webgl, nativeGPUField)
+			}
+			navigator, ok := fingerprintPayload["navigator"].(map[string]any)
+			require.True(t, ok)
+			for _, dynamicNavigatorField := range []string{"cookie_enabled", "do_not_track", "online"} {
+				assert.NotContains(t, navigator, dynamicNavigatorField)
+			}
+		})
 	}
 }
 
