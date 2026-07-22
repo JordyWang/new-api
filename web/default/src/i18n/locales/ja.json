@@ -5404,6 +5404,16 @@
     "No Invitation Codes Found": "招待コードが見つかりません",
     "Set to 0 for unlimited registrations": "無制限にするには0を設定します",
     "This will permanently delete invitation code {{code}}. This action cannot be undone.": "招待コード {{code}} を完全に削除します。この操作は取り消せません。",
-    "Update Invitation Code": "招待コードを編集"
+    "Update Invitation Code": "招待コードを編集",
+    "Automatically generate fingerprint": "フィンガープリントを自動生成",
+    "Generate one coherent fingerprint when the Profile is created and reuse it for every launch.": "Profile 作成時に一貫したフィンガープリントを一度生成し、起動ごとに再利用します。",
+    "Create an agent and a proxy in Proxy Management first": "先にプロキシ管理で Agent とプロキシを作成してください",
+    "Failed to load browser runtimes": "ブラウザーランタイムを読み込めませんでした",
+    "Select a browser runtime": "ブラウザーランタイムを選択してください",
+    "Generated browser profile": "自動生成されたブラウザー Profile",
+    "Automatically create a fixed Profile and fingerprint": "固定 Profile とフィンガープリントを自動作成",
+    "Browser runtime": "ブラウザーランタイム",
+    "A coherent fingerprint is generated once, stored with the new Profile, and reused for every browser launch.": "一貫したフィンガープリントを一度だけ生成して新しい Profile と共に保存し、ブラウザー起動ごとに再利用します。",
+    "Failed to load automatic Profile options": "自動 Profile オプションを読み込めませんでした"
   }
 }

@@ -1469,6 +1469,14 @@ export function ChannelMutateDrawer({
     }
   }, [form, isEditing])
 
+  const handleCodexOAuthProxyChange = useCallback(
+    (proxyId: number) => {
+      form.setValue('browser_proxy_id', proxyId, { shouldDirty: true })
+      form.setValue('proxy', '', { shouldDirty: true })
+    },
+    [form]
+  )
+
   // Unified function to update models
   const updateModels = useCallback(
     (newModels: string[], merge: boolean = false) => {
@@ -2969,6 +2977,11 @@ export function ChannelMutateDrawer({
                                   isEditing={isEditing}
                                   disabled={sensitiveLocked}
                                   flowId={currentCodexOAuthFlowId || ''}
+                                  channelName={currentName}
+                                  managedProxyId={currentBrowserProxyId ?? 0}
+                                  onManagedProxyChange={
+                                    handleCodexOAuthProxyChange
+                                  }
                                   onCompleted={handleCodexOAuthCompleted}
                                   onFlowReset={handleCodexOAuthReset}
                                 />

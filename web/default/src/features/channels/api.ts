@@ -24,6 +24,7 @@ import type {
   BatchDeleteParams,
   BatchSetTagParams,
   BrowserOAuthProfile,
+  BrowserRuntimeOption,
   Channel,
   ChannelBalanceResponse,
   ChannelOpsResponse,
@@ -93,6 +94,16 @@ export async function getManagedProxies(): Promise<
   return res.data
 }
 
+export async function getBrowserOAuthRuntimes(): Promise<
+  BrowserOAuthResponse<BrowserRuntimeOption[]>
+> {
+  const res = await api.get<BrowserOAuthResponse<BrowserRuntimeOption[]>>(
+    '/api/browser-oauth/runtimes',
+    { skipBusinessError: true, skipErrorHandler: true }
+  )
+  return res.data
+}
+
 export async function getBrowserOAuthProfiles(
   channelId: number | null
 ): Promise<BrowserOAuthResponse<BrowserOAuthProfile[]>> {
@@ -110,6 +121,11 @@ export async function getBrowserOAuthProfiles(
 export async function startCodexBrowserOAuth(input: {
   profile_id: number
   channel_id: number
+  auto_generate_profile?: boolean
+  profile_name?: string
+  agent_id?: number
+  proxy_id?: number
+  runtime_key?: string
 }): Promise<BrowserOAuthResponse<CodexBrowserOAuthFlow>> {
   const res = await api.post<BrowserOAuthResponse<CodexBrowserOAuthFlow>>(
     '/api/browser-oauth/codex',

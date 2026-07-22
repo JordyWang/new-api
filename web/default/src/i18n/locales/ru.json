@@ -5404,6 +5404,16 @@
     "No Invitation Codes Found": "Коды приглашений не найдены",
     "Set to 0 for unlimited registrations": "Установите 0 для неограниченных регистраций",
     "This will permanently delete invitation code {{code}}. This action cannot be undone.": "Код приглашения {{code}} будет удалён навсегда. Это действие нельзя отменить.",
-    "Update Invitation Code": "Изменить код приглашения"
+    "Update Invitation Code": "Изменить код приглашения",
+    "Automatically generate fingerprint": "Автоматически создать отпечаток",
+    "Generate one coherent fingerprint when the Profile is created and reuse it for every launch.": "Создать один согласованный отпечаток при создании профиля и использовать его при каждом запуске.",
+    "Create an agent and a proxy in Proxy Management first": "Сначала создайте агент и прокси в управлении прокси",
+    "Failed to load browser runtimes": "Не удалось загрузить среды браузера",
+    "Select a browser runtime": "Выберите среду браузера",
+    "Generated browser profile": "Сгенерированный профиль браузера",
+    "Automatically create a fixed Profile and fingerprint": "Автоматически создать фиксированные профиль и отпечаток",
+    "Browser runtime": "Среда браузера",
+    "A coherent fingerprint is generated once, stored with the new Profile, and reused for every browser launch.": "Согласованный отпечаток создаётся один раз, сохраняется с новым профилем и используется при каждом запуске браузера.",
+    "Failed to load automatic Profile options": "Не удалось загрузить параметры автоматического профиля"
   }
 }

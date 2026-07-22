@@ -73,19 +73,25 @@ type browserFingerprintRequest struct {
 }
 
 type browserProfileRequest struct {
-	Name          string `json:"name"`
-	ChannelId     *int   `json:"channel_id"`
-	AgentId       int    `json:"agent_id"`
-	ProxyId       int    `json:"proxy_id"`
-	FingerprintId int    `json:"fingerprint_id"`
-	RuntimeKey    string `json:"runtime_key"`
-	Persistent    *bool  `json:"persistent"`
-	Enabled       *bool  `json:"enabled"`
+	Name                    string `json:"name"`
+	ChannelId               *int   `json:"channel_id"`
+	AgentId                 int    `json:"agent_id"`
+	ProxyId                 int    `json:"proxy_id"`
+	FingerprintId           int    `json:"fingerprint_id"`
+	AutoGenerateFingerprint bool   `json:"auto_generate_fingerprint"`
+	RuntimeKey              string `json:"runtime_key"`
+	Persistent              *bool  `json:"persistent"`
+	Enabled                 *bool  `json:"enabled"`
 }
 
 type startCodexBrowserOAuthRequest struct {
-	ProfileId int `json:"profile_id"`
-	ChannelId int `json:"channel_id"`
+	ProfileId           int    `json:"profile_id"`
+	ChannelId           int    `json:"channel_id"`
+	AutoGenerateProfile bool   `json:"auto_generate_profile"`
+	ProfileName         string `json:"profile_name"`
+	AgentId             int    `json:"agent_id"`
+	ProxyId             int    `json:"proxy_id"`
+	RuntimeKey          string `json:"runtime_key"`
 }
 
 type browserAgentResponse struct {
@@ -321,6 +327,15 @@ func ListBrowserProxies(c *gin.Context) {
 
 func ListAvailableBrowserProxies(c *gin.Context) {
 	ListBrowserProxies(c)
+}
+
+func ListAvailableBrowserRuntimes(c *gin.Context) {
+	options, err := service.ListReadyBrowserRuntimeOptions()
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "", "data": options})
 }
 
 func CreateBrowserProxy(c *gin.Context) {
@@ -636,20 +651,37 @@ func CreateBrowserProfile(c *gin.Context) {
 		common.ApiErrorMsg(c, err.Error())
 		return
 	}
-	dataKey, err := common.GenerateRandomCharsKey(40)
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
 	now := time.Now().Unix()
-	profile.DataKey = dataKey
-	profile.CreatedAt = now
-	profile.UpdatedAt = now
-	if err := model.CreateBrowserProfile(profile); err != nil {
-		common.ApiError(c, err)
-		return
+	if request.AutoGenerateFingerprint {
+		profile, _, err = service.CreateGeneratedBrowserProfile(
+			profile.Name,
+			profile.ChannelId,
+			profile.AgentId,
+			profile.ProxyId,
+			profile.RuntimeKey,
+			profile.Persistent,
+			profile.Enabled,
+			now,
+		)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+	} else {
+		dataKey, generateErr := common.GenerateRandomCharsKey(40)
+		if generateErr != nil {
+			common.ApiError(c, generateErr)
+			return
+		}
+		profile.DataKey = dataKey
+		profile.CreatedAt = now
+		profile.UpdatedAt = now
+		if err := model.CreateBrowserProfile(profile); err != nil {
+			common.ApiError(c, err)
+			return
+		}
 	}
-	recordManageAudit(c, "browser_profile.create", map[string]interface{}{"id": profile.Id, "name": profile.Name})
+	recordManageAudit(c, "browser_profile.create", map[string]interface{}{"id": profile.Id, "name": profile.Name, "auto_generated_fingerprint": request.AutoGenerateFingerprint})
 	c.JSON(http.StatusOK, gin.H{"success": true, "message": "", "data": profile})
 }
 
@@ -661,6 +693,10 @@ func UpdateBrowserProfile(c *gin.Context) {
 	var request browserProfileRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
 		common.ApiError(c, err)
+		return
+	}
+	if request.AutoGenerateFingerprint {
+		common.ApiErrorMsg(c, "automatic fingerprint generation is only available when creating a browser profile")
 		return
 	}
 	existing, err := model.GetBrowserProfileById(id)
@@ -803,20 +839,45 @@ func StartCodexBrowserOAuth(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	if request.ProfileId <= 0 {
-		common.ApiErrorMsg(c, "browser profile is required")
-		return
-	}
 	if request.ChannelId < 0 {
 		common.ApiErrorMsg(c, "channel ID is invalid")
 		return
 	}
-	flow, err := service.StartCodexBrowserOAuthFlow(c.GetInt("id"), request.ChannelId, request.ProfileId)
+	var flow *service.CodexBrowserOAuthFlowView
+	var err error
+	if request.AutoGenerateProfile {
+		if request.ChannelId != 0 {
+			common.ApiErrorMsg(c, "automatic browser profile generation is only available when creating a channel")
+			return
+		}
+		profileName := strings.TrimSpace(request.ProfileName)
+		if len(profileName) > 128 {
+			common.ApiErrorMsg(c, "browser profile name must not exceed 128 characters")
+			return
+		}
+		if request.AgentId <= 0 || request.ProxyId <= 0 || !browserRuntimeKeyPattern.MatchString(strings.TrimSpace(request.RuntimeKey)) {
+			common.ApiErrorMsg(c, "browser agent, runtime, and managed proxy are required for automatic profile generation")
+			return
+		}
+		flow, err = service.StartCodexBrowserOAuthWithGeneratedProfile(
+			c.GetInt("id"),
+			profileName,
+			request.AgentId,
+			request.ProxyId,
+			strings.TrimSpace(request.RuntimeKey),
+		)
+	} else {
+		if request.ProfileId <= 0 {
+			common.ApiErrorMsg(c, "browser profile is required")
+			return
+		}
+		flow, err = service.StartCodexBrowserOAuthFlow(c.GetInt("id"), request.ChannelId, request.ProfileId)
+	}
 	if err != nil {
 		common.ApiErrorMsg(c, err.Error())
 		return
 	}
-	recordManageAudit(c, "codex_oauth.start", map[string]interface{}{"flow_id": flow.Id, "profile_id": flow.ProfileId, "channel_id": flow.ChannelId})
+	recordManageAudit(c, "codex_oauth.start", map[string]interface{}{"flow_id": flow.Id, "profile_id": flow.ProfileId, "channel_id": flow.ChannelId, "auto_generated_profile": request.AutoGenerateProfile})
 	c.JSON(http.StatusOK, gin.H{"success": true, "message": "", "data": flow})
 }
 
@@ -1190,19 +1251,21 @@ func normalizeCoreFingerprintPayload(raw string) (string, error) {
 	for _, key := range []string{"accept_language", "accept_languages", "country_code", "geo_overlay", "languages", "locale", "timezone", "timezone_id"} {
 		delete(payload, key)
 	}
+	corePayload := payload
 	fingerprintValue, hasFingerprint := payload["fingerprint"]
 	if hasFingerprint {
 		fingerprint, ok := fingerprintValue.(map[string]any)
 		if !ok {
 			return "", errors.New("fingerprint payload fingerprint field must be a JSON object")
 		}
-		for _, key := range []string{"accept_language", "accept_languages", "country_code", "geo_overlay", "languages", "locale", "timezone", "timezone_id"} {
-			delete(fingerprint, key)
-		}
-		if navigator, ok := fingerprint["navigator"].(map[string]any); ok {
-			delete(navigator, "language")
-			delete(navigator, "languages")
-		}
+		corePayload = fingerprint
+	}
+	for _, key := range []string{"accept_language", "accept_languages", "country_code", "geo_overlay", "languages", "locale", "timezone", "timezone_id"} {
+		delete(corePayload, key)
+	}
+	if navigator, ok := corePayload["navigator"].(map[string]any); ok {
+		delete(navigator, "language")
+		delete(navigator, "languages")
 	}
 	encoded, err := common.Marshal(payload)
 	if err != nil {
@@ -1222,8 +1285,17 @@ func normalizeBrowserProfileRequest(request browserProfileRequest, existing *mod
 	if !browserRuntimeKeyPattern.MatchString(strings.TrimSpace(request.RuntimeKey)) {
 		return nil, errors.New("browser runtime key is invalid")
 	}
-	if err := model.ValidateBrowserModelReferences(request.AgentId, request.ProxyId, request.FingerprintId); err != nil {
-		return nil, err
+	if request.AutoGenerateFingerprint {
+		if existing != nil {
+			return nil, errors.New("automatic fingerprint generation is only available when creating a browser profile")
+		}
+		if err := model.ValidateBrowserAgentProxyReferences(request.AgentId, request.ProxyId); err != nil {
+			return nil, err
+		}
+	} else {
+		if err := model.ValidateBrowserModelReferences(request.AgentId, request.ProxyId, request.FingerprintId); err != nil {
+			return nil, err
+		}
 	}
 	persistent := true
 	enabled := true

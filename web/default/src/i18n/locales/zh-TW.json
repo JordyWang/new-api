@@ -5404,6 +5404,16 @@
     "No Invitation Codes Found": "找不到邀請碼",
     "Set to 0 for unlimited registrations": "設定為 0 表示不限制註冊人數",
     "This will permanently delete invitation code {{code}}. This action cannot be undone.": "將永久刪除邀請碼 {{code}}，此操作無法復原。",
-    "Update Invitation Code": "編輯邀請碼"
+    "Update Invitation Code": "編輯邀請碼",
+    "Automatically generate fingerprint": "自動產生指紋",
+    "Generate one coherent fingerprint when the Profile is created and reuse it for every launch.": "建立 Profile 時產生一份一致的指紋，並在每次啟動時重複使用。",
+    "Create an agent and a proxy in Proxy Management first": "請先在代理管理中建立 Agent 和代理",
+    "Failed to load browser runtimes": "載入瀏覽器執行環境失敗",
+    "Select a browser runtime": "請選擇瀏覽器執行環境",
+    "Generated browser profile": "自動產生的瀏覽器 Profile",
+    "Automatically create a fixed Profile and fingerprint": "自動建立固定 Profile 和指紋",
+    "Browser runtime": "瀏覽器執行環境",
+    "A coherent fingerprint is generated once, stored with the new Profile, and reused for every browser launch.": "一致的指紋只產生一次，與新 Profile 一起儲存，並在每次瀏覽器啟動時重複使用。",
+    "Failed to load automatic Profile options": "載入自動 Profile 選項失敗"
   }
 }

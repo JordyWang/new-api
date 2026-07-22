@@ -5404,6 +5404,16 @@
     "No Invitation Codes Found": "No Invitation Codes Found",
     "Set to 0 for unlimited registrations": "Set to 0 for unlimited registrations",
     "This will permanently delete invitation code {{code}}. This action cannot be undone.": "This will permanently delete invitation code {{code}}. This action cannot be undone.",
-    "Update Invitation Code": "Update Invitation Code"
+    "Update Invitation Code": "Update Invitation Code",
+    "Automatically generate fingerprint": "Automatically generate fingerprint",
+    "Generate one coherent fingerprint when the Profile is created and reuse it for every launch.": "Generate one coherent fingerprint when the Profile is created and reuse it for every launch.",
+    "Create an agent and a proxy in Proxy Management first": "Create an agent and a proxy in Proxy Management first",
+    "Failed to load browser runtimes": "Failed to load browser runtimes",
+    "Select a browser runtime": "Select a browser runtime",
+    "Generated browser profile": "Generated browser profile",
+    "Automatically create a fixed Profile and fingerprint": "Automatically create a fixed Profile and fingerprint",
+    "Browser runtime": "Browser runtime",
+    "A coherent fingerprint is generated once, stored with the new Profile, and reused for every browser launch.": "A coherent fingerprint is generated once, stored with the new Profile, and reused for every browser launch.",
+    "Failed to load automatic Profile options": "Failed to load automatic Profile options"
   }
 }

@@ -149,6 +149,7 @@ export type BrowserProfileInput = {
   agent_id: number
   proxy_id: number
   fingerprint_id: number
+  auto_generate_fingerprint: boolean
   runtime_key: string
   persistent: boolean
   enabled: boolean

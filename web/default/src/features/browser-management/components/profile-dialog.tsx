@@ -74,10 +74,8 @@ function createProfileSchema(t: TFunction, channels: BrowserProfileChannel[]) {
       channel_id: z.number().int().positive().nullable(),
       agent_id: z.number().int().positive(t('Select a browser agent')),
       proxy_id: z.number().int().positive(t('Select a managed proxy')),
-      fingerprint_id: z
-        .number()
-        .int()
-        .positive(t('Select a browser fingerprint')),
+      fingerprint_id: z.number().int().min(0),
+      auto_generate_fingerprint: z.boolean(),
       runtime_key: z
         .string()
         .trim()
@@ -90,6 +88,13 @@ function createProfileSchema(t: TFunction, channels: BrowserProfileChannel[]) {
       enabled: z.boolean(),
     })
     .superRefine((values, context) => {
+      if (!values.auto_generate_fingerprint && values.fingerprint_id <= 0) {
+        context.addIssue({
+          code: 'custom',
+          path: ['fingerprint_id'],
+          message: t('Select a browser fingerprint'),
+        })
+      }
       if (!values.channel_id) return
       const channel = channels.find((item) => item.id === values.channel_id)
       if (
@@ -135,6 +140,7 @@ function profileDefaults(
     agent_id: profile?.agent_id ?? agents[0]?.id ?? 0,
     proxy_id: profile?.proxy_id ?? availableProxy?.id ?? 0,
     fingerprint_id: profile?.fingerprint_id ?? fingerprints[0]?.id ?? 0,
+    auto_generate_fingerprint: profile === null,
     runtime_key: profile?.runtime_key ?? '',
     persistent: profile?.persistent ?? true,
     enabled: profile?.enabled ?? true,
@@ -182,6 +188,7 @@ export function ProfileDialog(props: ProfileDialogProps) {
   const selectedAgentId = form.watch('agent_id')
   const selectedRuntimeKey = form.watch('runtime_key')
   const selectedChannelId = form.watch('channel_id')
+  const autoGenerateFingerprint = form.watch('auto_generate_fingerprint')
   const selectedAgent = props.agents.find(
     (agent) => agent.id === selectedAgentId
   )
@@ -508,34 +515,70 @@ export function ProfileDialog(props: ProfileDialogProps) {
             />
             <FormField
               control={form.control}
-              name='fingerprint_id'
+              name='auto_generate_fingerprint'
               render={({ field }) => (
-                <FormItem>
-                  <FormLabel>{t('Browser fingerprint')}</FormLabel>
-                  <Select
-                    items={fingerprintItems}
-                    value={String(field.value || '')}
-                    onValueChange={(value) => field.onChange(Number(value))}
-                  >
-                    <FormControl>
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                    </FormControl>
-                    <SelectContent alignItemWithTrigger={false}>
-                      <SelectGroup>
-                        {fingerprintItems.map((item) => (
-                          <SelectItem key={item.value} value={item.value}>
-                            {item.label}
-                          </SelectItem>
-                        ))}
-                      </SelectGroup>
-                    </SelectContent>
-                  </Select>
-                  <FormMessage />
+                <FormItem className='flex items-center justify-between gap-4'>
+                  <div>
+                    <FormLabel>
+                      {t('Automatically generate fingerprint')}
+                    </FormLabel>
+                    <FormDescription>
+                      {t(
+                        'Generate one coherent fingerprint when the Profile is created and reuse it for every launch.'
+                      )}
+                    </FormDescription>
+                  </div>
+                  <FormControl>
+                    <Switch
+                      checked={field.value}
+                      disabled={Boolean(props.profile)}
+                      onCheckedChange={(checked) => {
+                        field.onChange(checked)
+                        if (!checked && form.getValues('fingerprint_id') <= 0) {
+                          form.setValue(
+                            'fingerprint_id',
+                            props.fingerprints[0]?.id ?? 0,
+                            { shouldValidate: true }
+                          )
+                        }
+                      }}
+                    />
+                  </FormControl>
                 </FormItem>
               )}
             />
+            {!autoGenerateFingerprint && (
+              <FormField
+                control={form.control}
+                name='fingerprint_id'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('Browser fingerprint')}</FormLabel>
+                    <Select
+                      items={fingerprintItems}
+                      value={String(field.value || '')}
+                      onValueChange={(value) => field.onChange(Number(value))}
+                    >
+                      <FormControl>
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent alignItemWithTrigger={false}>
+                        <SelectGroup>
+                          {fingerprintItems.map((item) => (
+                            <SelectItem key={item.value} value={item.value}>
+                              {item.label}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            )}
             <FormField
               control={form.control}
               name='persistent'

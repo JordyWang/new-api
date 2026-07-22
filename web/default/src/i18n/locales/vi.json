@@ -5404,6 +5404,16 @@
     "No Invitation Codes Found": "Không tìm thấy mã mời",
     "Set to 0 for unlimited registrations": "Đặt thành 0 để không giới hạn đăng ký",
     "This will permanently delete invitation code {{code}}. This action cannot be undone.": "Mã mời {{code}} sẽ bị xóa vĩnh viễn. Không thể hoàn tác thao tác này.",
-    "Update Invitation Code": "Chỉnh sửa mã mời"
+    "Update Invitation Code": "Chỉnh sửa mã mời",
+    "Automatically generate fingerprint": "Tự động tạo dấu vân tay",
+    "Generate one coherent fingerprint when the Profile is created and reuse it for every launch.": "Tạo một dấu vân tay nhất quán khi tạo Profile và dùng lại cho mọi lần khởi chạy.",
+    "Create an agent and a proxy in Proxy Management first": "Trước tiên hãy tạo Agent và proxy trong Quản lý proxy",
+    "Failed to load browser runtimes": "Không thể tải môi trường chạy trình duyệt",
+    "Select a browser runtime": "Chọn môi trường chạy trình duyệt",
+    "Generated browser profile": "Profile trình duyệt được tạo tự động",
+    "Automatically create a fixed Profile and fingerprint": "Tự động tạo Profile và dấu vân tay cố định",
+    "Browser runtime": "Môi trường chạy trình duyệt",
+    "A coherent fingerprint is generated once, stored with the new Profile, and reused for every browser launch.": "Dấu vân tay nhất quán chỉ được tạo một lần, lưu cùng Profile mới và dùng lại cho mọi lần khởi chạy trình duyệt.",
+    "Failed to load automatic Profile options": "Không thể tải tùy chọn Profile tự động"
   }
 }

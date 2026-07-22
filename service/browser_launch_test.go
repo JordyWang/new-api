@@ -49,13 +49,28 @@ func TestClaimBrowserProfileLaunchReturnsManagedConfiguration(t *testing.T) {
 	assert.Equal(t, "agent-instance", stored.AgentInstanceId)
 }
 
-func TestStartBrowserProfileLaunchRequiresChannelBinding(t *testing.T) {
-	_, _, profile, _, _ := useBrowserLaunchServiceTestDatabase(t)
+func TestStartBrowserProfileLaunchAllowsUnboundProfile(t *testing.T) {
+	_, agent, profile, _, _ := useBrowserLaunchServiceTestDatabase(t)
 
-	_, err := StartBrowserProfileLaunch(profile.Id)
+	launch, err := StartBrowserProfileLaunch(profile.Id)
 
-	require.Error(t, err)
-	assert.ErrorContains(t, err, "must be bound to a channel")
+	require.NoError(t, err)
+	assert.Equal(t, profile.Id, launch.ProfileId)
+	assert.Zero(t, launch.ChannelId)
+	assert.Empty(t, launch.ChannelName)
+	assert.Equal(t, browseragentapi.FlowStatusPending, launch.Status)
+
+	stored, err := GetBrowserProfileLaunch(launch.Id)
+	require.NoError(t, err)
+	assert.Zero(t, stored.ChannelId)
+	assert.Empty(t, stored.ChannelName)
+
+	claim, err := ClaimBrowserProfileLaunch(agent.Id, "standalone-agent")
+	require.NoError(t, err)
+	require.NotNil(t, claim)
+	assert.Equal(t, launch.Id, claim.LaunchId)
+	assert.Equal(t, profile.Id, claim.Profile.Id)
+	assert.Equal(t, standaloneBrowserStartURL, claim.StartURL)
 }
 
 func useBrowserLaunchServiceTestDatabase(t *testing.T) (*gorm.DB, *model.BrowserAgent, *model.BrowserProfile, *model.BrowserProxy, *model.BrowserFingerprint) {

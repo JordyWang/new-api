@@ -42,6 +42,7 @@ func registerBrowserRoutes(apiRouter *gin.RouterGroup) {
 	channelOAuthRoute := apiRouter.Group("/browser-oauth")
 	channelOAuthRoute.Use(middleware.AdminAuth(), middleware.RequirePermission(authz.ChannelSensitiveWrite))
 	{
+		channelOAuthRoute.GET("/runtimes", controller.ListAvailableBrowserRuntimes)
 		channelOAuthRoute.GET("/proxies", controller.ListAvailableBrowserProxies)
 		channelOAuthRoute.GET("/profiles", controller.ListAvailableBrowserProfiles)
 		channelOAuthRoute.POST("/codex", controller.StartCodexBrowserOAuth)

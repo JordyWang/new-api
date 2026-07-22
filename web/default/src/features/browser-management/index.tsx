@@ -212,8 +212,7 @@ export function BrowserManagement() {
     fingerprints: fingerprintsQuery,
     profiles: profilesQuery,
   }[activeTab]
-  const canCreateProfile =
-    agents.length > 0 && proxies.length > 0 && fingerprints.length > 0
+  const canCreateProfile = agents.length > 0 && proxies.length > 0
 
   const openCreateDialog = () => {
     switch (activeTab) {
@@ -323,9 +322,7 @@ export function BrowserManagement() {
             disabled={activeTab === 'profiles' && !canCreateProfile}
             title={
               activeTab === 'profiles' && !canCreateProfile
-                ? t(
-                    'Create an agent, fingerprint, and a proxy in Proxy Management first'
-                  )
+                ? t('Create an agent and a proxy in Proxy Management first')
                 : undefined
             }
           >

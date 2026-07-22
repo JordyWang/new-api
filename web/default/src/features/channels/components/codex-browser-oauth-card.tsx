@@ -56,13 +56,17 @@ import {
 import {
   cancelCodexBrowserOAuth,
   getBrowserOAuthProfiles,
+  getBrowserOAuthRuntimes,
   getCodexBrowserOAuth,
+  getManagedProxies,
   startCodexBrowserOAuth,
 } from '../api'
 import type {
   BrowserOAuthProfile,
+  BrowserRuntimeOption,
   CodexBrowserOAuthFlow,
   CodexBrowserOAuthFlowStatus,
+  ManagedProxy,
 } from '../types'
 
 const ACTIVE_FLOW_STATUSES = new Set<CodexBrowserOAuthFlowStatus>([
@@ -71,6 +75,9 @@ const ACTIVE_FLOW_STATUSES = new Set<CodexBrowserOAuthFlowStatus>([
   'running',
 ])
 const EMPTY_PROFILES: BrowserOAuthProfile[] = []
+const EMPTY_RUNTIMES: BrowserRuntimeOption[] = []
+const EMPTY_PROXIES: ManagedProxy[] = []
+const AUTOMATIC_PROFILE_VALUE = 'automatic'
 
 type CodexBrowserOAuthCardProps = {
   open: boolean
@@ -78,6 +85,9 @@ type CodexBrowserOAuthCardProps = {
   isEditing: boolean
   disabled: boolean
   flowId: string
+  channelName: string
+  managedProxyId: number
+  onManagedProxyChange: (proxyId: number) => void
   onCompleted: (flow: CodexBrowserOAuthFlow) => void
   onFlowReset: () => void
 }
@@ -101,8 +111,14 @@ export function CodexBrowserOAuthCard(props: CodexBrowserOAuthCardProps) {
   const { t } = useTranslation()
   const onCompleted = props.onCompleted
   const onFlowReset = props.onFlowReset
+  const onManagedProxyChange = props.onManagedProxyChange
   const isEditing = props.isEditing
+  const [autoGenerateProfile, setAutoGenerateProfile] = useState(
+    !props.isEditing
+  )
   const [selectedProfileId, setSelectedProfileId] = useState(0)
+  const [selectedRuntimeValue, setSelectedRuntimeValue] = useState('')
+  const [selectedProxyId, setSelectedProxyId] = useState(0)
   const [activeFlowId, setActiveFlowId] = useState<string | null>(
     props.flowId || null
   )
@@ -124,7 +140,44 @@ export function CodexBrowserOAuthCard(props: CodexBrowserOAuthCardProps) {
     [profiles]
   )
 
+  const runtimesQuery = useQuery({
+    queryKey: ['browser-oauth', 'runtimes'],
+    queryFn: async () => {
+      const response = await getBrowserOAuthRuntimes()
+      return requireData(response, t('Failed to load browser runtimes'))
+    },
+    enabled: props.open && !props.disabled && !props.isEditing,
+    staleTime: 15_000,
+  })
+  const runtimeOptions = runtimesQuery.data ?? EMPTY_RUNTIMES
+
+  const proxiesQuery = useQuery({
+    queryKey: ['browser-oauth', 'proxies'],
+    queryFn: async () => {
+      const response = await getManagedProxies()
+      return requireData(response, t('Failed to load managed proxies'))
+    },
+    enabled: props.open && !props.disabled && !props.isEditing,
+    staleTime: 15_000,
+  })
+  const managedProxies = proxiesQuery.data ?? EMPTY_PROXIES
+  const availableProxies = useMemo(
+    () =>
+      managedProxies.filter(
+        (proxy) =>
+          proxy.enabled &&
+          (proxy.max_channel_accounts === 0 ||
+            proxy.channel_account_count < proxy.max_channel_accounts)
+      ),
+    [managedProxies]
+  )
+  const selectedRuntime = runtimeOptions.find(
+    (option) =>
+      `${option.agent_id}:${option.runtime_key}` === selectedRuntimeValue
+  )
+
   useEffect(() => {
+    if (autoGenerateProfile) return
     if (!selectableProfiles.length) {
       setSelectedProfileId(0)
       return
@@ -134,7 +187,57 @@ export function CodexBrowserOAuthCard(props: CodexBrowserOAuthCardProps) {
     ) {
       setSelectedProfileId(selectableProfiles[0].id)
     }
-  }, [selectableProfiles, selectedProfileId])
+  }, [autoGenerateProfile, selectableProfiles, selectedProfileId])
+
+  useEffect(() => {
+    if (!autoGenerateProfile || props.isEditing) return
+    if (
+      !runtimeOptions.some(
+        (option) =>
+          `${option.agent_id}:${option.runtime_key}` === selectedRuntimeValue
+      )
+    ) {
+      const first = runtimeOptions[0]
+      setSelectedRuntimeValue(
+        first ? `${first.agent_id}:${first.runtime_key}` : ''
+      )
+    }
+  }, [
+    autoGenerateProfile,
+    props.isEditing,
+    runtimeOptions,
+    selectedRuntimeValue,
+  ])
+
+  useEffect(() => {
+    if (!autoGenerateProfile || props.isEditing) return
+    if (availableProxies.some((proxy) => proxy.id === selectedProxyId)) return
+    const preferred = availableProxies.find(
+      (proxy) => proxy.id === props.managedProxyId
+    )
+    setSelectedProxyId(preferred?.id ?? availableProxies[0]?.id ?? 0)
+  }, [
+    autoGenerateProfile,
+    availableProxies,
+    props.isEditing,
+    props.managedProxyId,
+    selectedProxyId,
+  ])
+
+  useEffect(() => {
+    if (
+      autoGenerateProfile &&
+      selectedProxyId > 0 &&
+      selectedProxyId !== props.managedProxyId
+    ) {
+      onManagedProxyChange(selectedProxyId)
+    }
+  }, [
+    autoGenerateProfile,
+    props.managedProxyId,
+    onManagedProxyChange,
+    selectedProxyId,
+  ])
 
   useEffect(() => {
     if (props.flowId && !activeFlowId) setActiveFlowId(props.flowId)
@@ -180,8 +283,11 @@ export function CodexBrowserOAuthCard(props: CodexBrowserOAuthCardProps) {
     }
     setActiveFlowId(null)
     setSelectedProfileId(0)
+    setAutoGenerateProfile(!props.isEditing)
+    setSelectedRuntimeValue('')
+    setSelectedProxyId(0)
     completedFlowRef.current = null
-  }, [activeFlowId, flow, props.open])
+  }, [activeFlowId, flow, props.isEditing, props.open])
 
   useEffect(() => {
     if (flow?.status !== 'completed' || completedFlowRef.current === flow.id) {
@@ -218,15 +324,31 @@ export function CodexBrowserOAuthCard(props: CodexBrowserOAuthCardProps) {
           )
         }
       }
+      if (autoGenerateProfile && !selectedRuntime) {
+        throw new Error(t('Select a browser runtime'))
+      }
       const response = await startCodexBrowserOAuth({
-        profile_id: selectedProfileId,
+        profile_id: autoGenerateProfile ? 0 : selectedProfileId,
         channel_id: props.channelId ?? 0,
+        auto_generate_profile: autoGenerateProfile,
+        profile_name: `${props.channelName.trim() || t('Codex channel')} · ${t('Browser profile')}`,
+        agent_id: autoGenerateProfile ? selectedRuntime?.agent_id : undefined,
+        proxy_id: autoGenerateProfile ? selectedProxyId : undefined,
+        runtime_key: autoGenerateProfile
+          ? selectedRuntime?.runtime_key
+          : undefined,
       })
       return requireData(response, t('Failed to start Codex OAuth'))
     },
     onSuccess: (nextFlow) => {
       completedFlowRef.current = null
       props.onFlowReset()
+      if (autoGenerateProfile) {
+        setAutoGenerateProfile(false)
+        setSelectedProfileId(nextFlow.profile_id)
+        void profilesQuery.refetch()
+        void proxiesQuery.refetch()
+      }
       setActiveFlowId(nextFlow.id)
     },
     onError: (error) => {
@@ -269,6 +391,49 @@ export function CodexBrowserOAuthCard(props: CodexBrowserOAuthCardProps) {
       disabled: profile.proxy_at_capacity,
     }
   })
+  if (
+    selectedProfileId > 0 &&
+    !profileItems.some((item) => item.value === String(selectedProfileId))
+  ) {
+    profileItems.push({
+      value: String(selectedProfileId),
+      label: flow?.profile_name || t('Generated browser profile'),
+      disabled: false,
+    })
+  }
+  if (!props.isEditing) {
+    profileItems.unshift({
+      value: AUTOMATIC_PROFILE_VALUE,
+      label: t('Automatically create a fixed Profile and fingerprint'),
+      disabled: false,
+    })
+  }
+  const runtimeItems = runtimeOptions.map((option) => ({
+    value: `${option.agent_id}:${option.runtime_key}`,
+    label: `${option.agent_name} · ${option.runtime_key} · ${t('Profiles')}: ${option.profile_count}`,
+  }))
+  const proxyItems = availableProxies.map((proxy) => {
+    const capacity =
+      proxy.max_channel_accounts > 0
+        ? `${proxy.channel_account_count}/${proxy.max_channel_accounts}`
+        : `${proxy.channel_account_count}/${t('Unlimited')}`
+    return {
+      value: String(proxy.id),
+      label: `${proxy.name} · ${t('Profiles')}: ${proxy.profile_count} · ${t('Channel accounts')}: ${capacity}`,
+    }
+  })
+  let profileSelectionValue = ''
+  if (autoGenerateProfile) {
+    profileSelectionValue = AUTOMATIC_PROFILE_VALUE
+  } else if (selectedProfileId) {
+    profileSelectionValue = String(selectedProfileId)
+  }
+  let automaticOptionsError = ''
+  if (runtimesQuery.error instanceof Error) {
+    automaticOptionsError = runtimesQuery.error.message
+  } else if (proxiesQuery.error instanceof Error) {
+    automaticOptionsError = proxiesQuery.error.message
+  }
   const isFlowActive = Boolean(flow && ACTIVE_FLOW_STATUSES.has(flow.status))
   const status = flow?.status
   let statusLabel = t('Ready to start')
@@ -332,8 +497,15 @@ export function CodexBrowserOAuthCard(props: CodexBrowserOAuthCardProps) {
           <span className='text-sm font-medium'>{t('Browser profile')}</span>
           <Select
             items={profileItems}
-            value={selectedProfileId ? String(selectedProfileId) : ''}
-            onValueChange={(value) => setSelectedProfileId(Number(value))}
+            value={profileSelectionValue}
+            onValueChange={(value) => {
+              if (value === AUTOMATIC_PROFILE_VALUE) {
+                setAutoGenerateProfile(true)
+                return
+              }
+              setAutoGenerateProfile(false)
+              setSelectedProfileId(Number(value))
+            }}
             disabled={props.disabled || isFlowActive || startMutation.isPending}
           >
             <SelectTrigger>
@@ -358,6 +530,71 @@ export function CodexBrowserOAuthCard(props: CodexBrowserOAuthCardProps) {
               </SelectGroup>
             </SelectContent>
           </Select>
+          {autoGenerateProfile && !props.isEditing && (
+            <div className='grid gap-3 rounded-lg border p-3 sm:grid-cols-2'>
+              <div className='flex min-w-0 flex-col gap-2'>
+                <span className='text-sm font-medium'>
+                  {t('Browser runtime')}
+                </span>
+                <Select
+                  items={runtimeItems}
+                  value={selectedRuntimeValue}
+                  onValueChange={(value) =>
+                    setSelectedRuntimeValue(value ?? '')
+                  }
+                  disabled={runtimesQuery.isPending || isFlowActive}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent alignItemWithTrigger={false}>
+                    <SelectGroup>
+                      {runtimeItems.map((item) => (
+                        <SelectItem key={item.value} value={item.value}>
+                          {item.label}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className='flex min-w-0 flex-col gap-2'>
+                <span className='text-sm font-medium'>
+                  {t('Managed proxy')}
+                </span>
+                <Select
+                  items={proxyItems}
+                  value={selectedProxyId ? String(selectedProxyId) : ''}
+                  onValueChange={(value) => setSelectedProxyId(Number(value))}
+                  disabled={proxiesQuery.isPending || isFlowActive}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent alignItemWithTrigger={false}>
+                    <SelectGroup>
+                      {proxyItems.map((item) => (
+                        <SelectItem key={item.value} value={item.value}>
+                          {item.label}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+              </div>
+              <p className='text-muted-foreground text-xs sm:col-span-2'>
+                {t(
+                  'A coherent fingerprint is generated once, stored with the new Profile, and reused for every browser launch.'
+                )}
+              </p>
+              {(runtimesQuery.isError || proxiesQuery.isError) && (
+                <p className='text-destructive text-xs sm:col-span-2'>
+                  {automaticOptionsError ||
+                    t('Failed to load automatic Profile options')}
+                </p>
+              )}
+            </div>
+          )}
           {profilesQuery.isError && (
             <p className='text-destructive text-xs'>
               {profilesQuery.error instanceof Error
@@ -365,7 +602,8 @@ export function CodexBrowserOAuthCard(props: CodexBrowserOAuthCardProps) {
                 : t('Failed to load browser profiles')}
             </p>
           )}
-          {!profilesQuery.isPending &&
+          {!autoGenerateProfile &&
+            !profilesQuery.isPending &&
             !profilesQuery.isError &&
             profiles.length === 0 && (
               <p className='text-muted-foreground text-xs'>
@@ -374,7 +612,8 @@ export function CodexBrowserOAuthCard(props: CodexBrowserOAuthCardProps) {
                 )}
               </p>
             )}
-          {!profilesQuery.isPending &&
+          {!autoGenerateProfile &&
+            !profilesQuery.isPending &&
             !profilesQuery.isError &&
             profiles.length > 0 &&
             selectableProfiles.length === 0 && (
@@ -457,8 +696,12 @@ export function CodexBrowserOAuthCard(props: CodexBrowserOAuthCardProps) {
             onClick={() => startMutation.mutate()}
             disabled={
               props.disabled ||
-              !selectedProfileId ||
-              profilesQuery.isPending ||
+              (autoGenerateProfile
+                ? !selectedRuntime ||
+                  !selectedProxyId ||
+                  runtimesQuery.isPending ||
+                  proxiesQuery.isPending
+                : !selectedProfileId || profilesQuery.isPending) ||
               startMutation.isPending
             }
           >

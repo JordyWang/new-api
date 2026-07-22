@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"encoding/base64"
 	"net"
 	"net/http"
 	"net/url"
@@ -27,6 +29,8 @@ func TestAgentRejectsServerControlledNetworkAndProfileOverrides(t *testing.T) {
 		"--window-size=1,1",
 		"--force-time-zone-for-testing=UTC",
 		"--force-webrtc-ip-handling-policy=default",
+		"--transfigure-fingerprint-config=/tmp/unmanaged.json",
+		"--transfigure-fingerprint-config-json=e30=",
 		"--enable-quic",
 		"--remote-debugging-port=9222",
 	} {
@@ -39,6 +43,7 @@ func TestAgentRejectsDangerousBrowserEnvironmentVariables(t *testing.T) {
 	for _, key := range []string{
 		"LD_PRELOAD", "PATH", "HOME", "DYLD_INSERT_LIBRARIES", "NODE_OPTIONS",
 		"TZ", "LANG", "LANGUAGE", "LC_ALL", "LC_TIME", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+		"TRANSFIGURE_FINGERPRINT_CONFIG", "TRANSFIGURE_FINGERPRINT_CONFIG_JSON",
 	} {
 		assert.True(t, forbiddenBrowserEnvironmentKey(key), key)
 	}
@@ -65,7 +70,8 @@ func TestManagedBrowserUsesProxyGeoOverlay(t *testing.T) {
 	}
 
 	preflightURL := "http://127.0.0.1:1455/browser/preflight?token=test"
-	args, err := buildBrowserLaunchArgs("/profiles/test", "/profiles/test/fingerprint.json", "http://127.0.0.1:3000", preflightURL, claim, geo)
+	fingerprintConfigJSON := base64.StdEncoding.EncodeToString([]byte(`{"fingerprint":{"profile_id":"test"}}`))
+	args, err := buildBrowserLaunchArgs("/profiles/test", "/profiles/test/fingerprint.json", fingerprintConfigJSON, "http://127.0.0.1:3000", preflightURL, claim, geo)
 	require.NoError(t, err)
 	assert.Contains(t, args, "--proxy-server=http://127.0.0.1:3000")
 	assert.Contains(t, args, "--proxy-bypass-list=<-loopback>;localhost;127.0.0.1;[::1]")
@@ -73,13 +79,15 @@ func TestManagedBrowserUsesProxyGeoOverlay(t *testing.T) {
 	assert.Contains(t, args, "--force-time-zone-for-testing=Asia/Singapore")
 	assert.Contains(t, args, "--force-webrtc-ip-handling-policy=disable_non_proxied_udp")
 	assert.Contains(t, args, "--disable-quic")
+	assert.Contains(t, args, "--transfigure-fingerprint-config=/profiles/test/fingerprint.json")
+	assert.Contains(t, args, "--transfigure-fingerprint-config-json="+fingerprintConfigJSON)
 	assert.Equal(t, preflightURL, args[len(args)-1])
 	assert.NotContains(t, args, claim.AuthorizeURL)
 
 	t.Setenv("TZ", "UTC")
 	t.Setenv("LANG", "fr_FR.UTF-8")
 	t.Setenv("HTTP_PROXY", "http://unmanaged.example:8080")
-	environment, err := buildBrowserEnvironment("/profiles/test", "/profiles/test/fingerprint.json", "http://127.0.0.1:3000", preflightURL, claim, geo)
+	environment, err := buildBrowserEnvironment("/profiles/test", "/profiles/test/fingerprint.json", fingerprintConfigJSON, "http://127.0.0.1:3000", preflightURL, claim, geo)
 	require.NoError(t, err)
 	environmentValues := make(map[string]string, len(environment))
 	for _, item := range environment {
@@ -94,6 +102,80 @@ func TestManagedBrowserUsesProxyGeoOverlay(t *testing.T) {
 	assert.Equal(t, "http://127.0.0.1:3000", environmentValues["HTTP_PROXY"])
 	assert.Equal(t, "http://127.0.0.1:3000", environmentValues["HTTPS_PROXY"])
 	assert.Equal(t, "localhost,127.0.0.1,::1", environmentValues["NO_PROXY"])
+	assert.Equal(t, "/profiles/test/fingerprint.json", environmentValues["TRANSFIGURE_FINGERPRINT_CONFIG"])
+	assert.Equal(t, fingerprintConfigJSON, environmentValues["TRANSFIGURE_FINGERPRINT_CONFIG_JSON"])
+}
+
+func TestManagedBrowserReplacesLegacyFingerprintConfigArguments(t *testing.T) {
+	claim := &browseragentapi.CodexOAuthClaim{
+		Fingerprint: browseragentapi.CodexOAuthFingerprint{
+			LaunchArgs: `[
+				"--transfigure-fingerprint-config={fingerprint_file}",
+				"--transfigure-fingerprint-config-json=unmanaged"
+			]`,
+		},
+	}
+	geo := &proxyGeoIdentity{Locale: "en-US", Timezone: "America/Los_Angeles"}
+	args, err := buildBrowserLaunchArgs(
+		"/profiles/test",
+		"/profiles/test/.new-api/fingerprint.json",
+		"managed-inline-config",
+		"http://127.0.0.1:3000",
+		"http://127.0.0.1:1455/browser/preflight?token=test",
+		claim,
+		geo,
+	)
+	require.NoError(t, err)
+
+	pathCount := 0
+	inlineCount := 0
+	for _, argument := range args {
+		if strings.HasPrefix(argument, "--transfigure-fingerprint-config=") {
+			pathCount++
+		}
+		if strings.HasPrefix(argument, "--transfigure-fingerprint-config-json=") {
+			inlineCount++
+		}
+	}
+	assert.Equal(t, 1, pathCount)
+	assert.Equal(t, 1, inlineCount)
+	assert.Contains(t, args, "--transfigure-fingerprint-config=/profiles/test/.new-api/fingerprint.json")
+	assert.Contains(t, args, "--transfigure-fingerprint-config-json=managed-inline-config")
+}
+
+func TestStartManagedBrowserLoadsInlineFingerprintConfig(t *testing.T) {
+	profileDir := t.TempDir()
+	fingerprintFile := profileDir + "/fingerprint.json"
+	fingerprintConfig := []byte(`{"fingerprint":{"profile_id":"stable"}}`)
+	require.NoError(t, os.WriteFile(fingerprintFile, fingerprintConfig, 0o600))
+	claim := &browseragentapi.CodexOAuthClaim{
+		Profile: browseragentapi.CodexOAuthProfile{RuntimeKey: "formal"},
+		Fingerprint: browseragentapi.CodexOAuthFingerprint{
+			LaunchArgs:  `[]`,
+			Environment: `{}`,
+		},
+	}
+	geo := &proxyGeoIdentity{Locale: "en-US", Timezone: "America/Los_Angeles"}
+
+	command, err := startManagedBrowser(
+		context.Background(),
+		"/bin/true",
+		profileDir,
+		fingerprintFile,
+		"http://127.0.0.1:3000",
+		"http://127.0.0.1:1455/browser/preflight?token=test",
+		claim,
+		geo,
+	)
+	require.NoError(t, err)
+	require.NoError(t, command.Wait())
+
+	inlineConfig := base64.StdEncoding.EncodeToString(fingerprintConfig)
+	assert.Contains(t, command.Args, "--transfigure-fingerprint-config="+fingerprintFile)
+	assert.Contains(t, command.Args, "--transfigure-fingerprint-config-json="+inlineConfig)
+	environment := strings.Join(command.Env, "\n")
+	assert.Contains(t, environment, "TRANSFIGURE_FINGERPRINT_CONFIG="+fingerprintFile+"\n")
+	assert.Contains(t, environment, "TRANSFIGURE_FINGERPRINT_CONFIG_JSON="+inlineConfig+"\n")
 }
 
 func TestStandaloneBrowserClaimValidation(t *testing.T) {
@@ -138,6 +220,7 @@ func TestStandaloneBrowserUsesManagedProfileProxyFingerprintAndPreflight(t *test
 	args, err := buildBrowserLaunchArgs(
 		"/profiles/"+launch.Profile.DataKey,
 		"/profiles/"+launch.Profile.DataKey+"/fingerprint.json",
+		"managed-inline-config",
 		"http://127.0.0.1:3000",
 		preflightURL,
 		claim,
@@ -213,6 +296,40 @@ func TestFingerprintFileCombinesFixedCoreWithProxyGeoOverlay(t *testing.T) {
 	assert.Equal(t, "en-SG", rendered.GeoOverlay.Locale)
 	assert.Equal(t, "Asia/Singapore", rendered.GeoOverlay.Timezone)
 	assert.Equal(t, []string{"en-SG", "en", "cmn"}, rendered.GeoOverlay.Languages)
+}
+
+func TestFingerprintFilePreservesFlatCoreWithProxyGeoOverlay(t *testing.T) {
+	geo := &proxyGeoIdentity{
+		CountryCode:    "SG",
+		Locale:         "en-SG",
+		Timezone:       "Asia/Singapore",
+		Languages:      []string{"en-SG", "en", "cmn"},
+		AcceptLanguage: "en-SG,en,cmn",
+	}
+	path, err := writeFingerprintPayload(t.TempDir(), `{
+		"profile_id":"flat-core-v1",
+		"accept_language":"en-US,en",
+		"timezone":"America/Los_Angeles",
+		"canvas":{"noise_seed":"flat-fixed-core"},
+		"hardware":{"hardware_concurrency":8},
+		"navigator":{"language":"en-US","languages":["en-US","en"],"platform":"Linux x86_64"}
+	}`, geo)
+	require.NoError(t, err)
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	var rendered map[string]any
+	require.NoError(t, common.Unmarshal(data, &rendered))
+
+	assert.NotContains(t, rendered, "fingerprint")
+	assert.Equal(t, "en-SG,en,cmn", rendered["accept_language"])
+	assert.Equal(t, "Asia/Singapore", rendered["timezone"])
+	assert.Equal(t, map[string]any{"noise_seed": "flat-fixed-core"}, rendered["canvas"])
+	assert.Equal(t, map[string]any{"hardware_concurrency": float64(8)}, rendered["hardware"])
+	navigator, ok := rendered["navigator"].(map[string]any)
+	require.True(t, ok)
+	assert.NotContains(t, navigator, "language")
+	assert.NotContains(t, navigator, "languages")
+	assert.Equal(t, "Linux x86_64", navigator["platform"])
 }
 
 func TestFingerprintFileRejectsNullPayload(t *testing.T) {

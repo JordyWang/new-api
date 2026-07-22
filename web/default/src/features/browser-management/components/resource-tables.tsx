@@ -468,11 +468,7 @@ export function ProfilesTable(props: ProfilesTableProps) {
             ) : (
               <DropdownMenuItem
                 onClick={() => props.onLaunch(profile)}
-                disabled={
-                  !profile.channel_id ||
-                  !profile.enabled ||
-                  !profile.agent_online
-                }
+                disabled={!profile.enabled || !profile.agent_online}
               >
                 <ExternalLink />
                 {t('Open browser')}

@@ -97,24 +97,26 @@ func StartBrowserProfileLaunch(profileId int) (*BrowserLaunchView, error) {
 	if err != nil {
 		return nil, err
 	}
-	if profile.ChannelId == nil || *profile.ChannelId <= 0 {
-		return nil, errors.New("browser profile must be bound to a channel before it can be opened")
-	}
-	channel, err := model.GetChannelById(*profile.ChannelId, false)
-	if err != nil {
-		return nil, err
-	}
-	if channel.Type != constant.ChannelTypeCodex {
-		return nil, errors.New("browser profile channel is not Codex")
-	}
-	if channel.GetSetting().BrowserProxyId != profile.ProxyId {
-		return nil, errors.New("browser profile and channel must use the same managed proxy")
+	var channel *model.Channel
+	channelId := 0
+	if profile.ChannelId != nil && *profile.ChannelId > 0 {
+		channel, err = model.GetChannelById(*profile.ChannelId, false)
+		if err != nil {
+			return nil, err
+		}
+		if channel.Type != constant.ChannelTypeCodex {
+			return nil, errors.New("browser profile channel is not Codex")
+		}
+		if channel.GetSetting().BrowserProxyId != profile.ProxyId {
+			return nil, errors.New("browser profile and channel must use the same managed proxy")
+		}
+		channelId = channel.Id
 	}
 
 	launch := &model.BrowserLaunch{
 		Id:            common.GetUUID(),
 		ProfileId:     profile.Id,
-		ChannelId:     channel.Id,
+		ChannelId:     channelId,
 		AgentId:       profile.AgentId,
 		ProxyId:       profile.ProxyId,
 		FingerprintId: profile.FingerprintId,
@@ -140,9 +142,12 @@ func GetBrowserProfileLaunch(launchId string) (*BrowserLaunchView, error) {
 	if err != nil {
 		return nil, err
 	}
-	channel, err := model.GetChannelById(launch.ChannelId, false)
-	if err != nil {
-		return nil, err
+	var channel *model.Channel
+	if launch.ChannelId > 0 {
+		channel, err = model.GetChannelById(launch.ChannelId, false)
+		if err != nil {
+			return nil, err
+		}
 	}
 	agent, err := model.GetBrowserAgentById(launch.AgentId)
 	if err != nil {
@@ -250,13 +255,12 @@ func GetAgentBrowserProfileLaunchStatus(agentId int, instanceId string, launchId
 }
 
 func browserLaunchView(launch *model.BrowserLaunch, profile *model.BrowserProfile, channel *model.Channel, agent *model.BrowserAgent, now int64) *BrowserLaunchView {
-	return &BrowserLaunchView{
+	view := &BrowserLaunchView{
 		Id:           launch.Id,
 		Status:       launch.Status,
 		ProfileId:    launch.ProfileId,
 		ProfileName:  profile.Name,
 		ChannelId:    launch.ChannelId,
-		ChannelName:  channel.Name,
 		AgentId:      launch.AgentId,
 		AgentName:    agent.Name,
 		AgentOnline:  agent.Enabled && agent.LastSeenAt >= now-int64(browserAgentOnlineWindow/time.Second),
@@ -266,4 +270,8 @@ func browserLaunchView(launch *model.BrowserLaunch, profile *model.BrowserProfil
 		CompletedAt:  launch.CompletedAt,
 		ErrorMessage: launch.ErrorMessage,
 	}
+	if channel != nil {
+		view.ChannelName = channel.Name
+	}
+	return view
 }

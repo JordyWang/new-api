@@ -409,6 +409,19 @@ func CreateBrowserProfile(profile *BrowserProfile) error {
 	})
 }
 
+func CreateBrowserProfileWithFingerprint(profile *BrowserProfile, fingerprint *BrowserFingerprint) error {
+	return DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(fingerprint).Error; err != nil {
+			return err
+		}
+		profile.FingerprintId = fingerprint.Id
+		if err := syncBrowserProfileChannel(tx, profile); err != nil {
+			return err
+		}
+		return tx.Create(profile).Error
+	})
+}
+
 func UpdateBrowserProfile(profile *BrowserProfile) error {
 	return DB.Transaction(func(tx *gorm.DB) error {
 		if err := syncBrowserProfileChannel(tx, profile); err != nil {
@@ -524,6 +537,40 @@ func CountBrowserProfilesByAgent(agentId int) (int64, error) {
 	var count int64
 	err := DB.Model(&BrowserProfile{}).Where("agent_id = ?", agentId).Count(&count).Error
 	return count, err
+}
+
+func CountBrowserProfilesByAgents(agentIds []int) (map[int]int64, error) {
+	counts := make(map[int]int64, len(agentIds))
+	uniqueIds := make([]int, 0, len(agentIds))
+	for _, agentId := range agentIds {
+		if agentId <= 0 {
+			continue
+		}
+		if _, exists := counts[agentId]; exists {
+			continue
+		}
+		counts[agentId] = 0
+		uniqueIds = append(uniqueIds, agentId)
+	}
+	if len(uniqueIds) == 0 {
+		return counts, nil
+	}
+
+	var rows []struct {
+		AgentId int
+		Total   int64
+	}
+	if err := DB.Model(&BrowserProfile{}).
+		Select("agent_id, COUNT(*) AS total").
+		Where("agent_id IN ?", uniqueIds).
+		Group("agent_id").
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		counts[row.AgentId] = row.Total
+	}
+	return counts, nil
 }
 
 func CountBrowserProfilesByProxy(proxyId int) (int64, error) {
@@ -1315,14 +1362,21 @@ func isCodexOAuthBrowserActiveStatus(status string) bool {
 }
 
 func ValidateBrowserModelReferences(agentId int, proxyId int, fingerprintId int) error {
+	if err := ValidateBrowserAgentProxyReferences(agentId, proxyId); err != nil {
+		return err
+	}
+	if _, err := GetBrowserFingerprintById(fingerprintId); err != nil {
+		return fmt.Errorf("browser fingerprint not found: %w", err)
+	}
+	return nil
+}
+
+func ValidateBrowserAgentProxyReferences(agentId int, proxyId int) error {
 	if _, err := GetBrowserAgentById(agentId); err != nil {
 		return fmt.Errorf("browser agent not found: %w", err)
 	}
 	if _, err := GetBrowserProxyById(proxyId); err != nil {
 		return fmt.Errorf("browser proxy not found: %w", err)
-	}
-	if _, err := GetBrowserFingerprintById(fingerprintId); err != nil {
-		return fmt.Errorf("browser fingerprint not found: %w", err)
 	}
 	return nil
 }

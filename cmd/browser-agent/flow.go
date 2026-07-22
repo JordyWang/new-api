@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log"
@@ -423,15 +424,15 @@ func writeFingerprintPayload(profileDir string, payload string, geo *proxyGeoIde
 	for _, key := range []string{"accept_language", "accept_languages", "country_code", "geo_overlay", "languages", "locale", "timezone", "timezone_id"} {
 		delete(parsed, key)
 	}
-	fingerprint, exists := parsed["fingerprint"].(map[string]any)
-	if !exists {
-		if parsed["fingerprint"] != nil {
+	fingerprint := parsed
+	if fingerprintValue, exists := parsed["fingerprint"]; exists {
+		nestedFingerprint, ok := fingerprintValue.(map[string]any)
+		if !ok {
 			return "", errors.New("fingerprint payload fingerprint field is invalid")
 		}
-		fingerprint = make(map[string]any)
-		parsed["fingerprint"] = fingerprint
+		fingerprint = nestedFingerprint
 	}
-	for _, key := range []string{"accept_languages", "country_code", "geo_overlay", "languages", "locale", "timezone_id"} {
+	for _, key := range []string{"accept_language", "accept_languages", "country_code", "geo_overlay", "languages", "locale", "timezone", "timezone_id"} {
 		delete(fingerprint, key)
 	}
 	if navigator, ok := fingerprint["navigator"].(map[string]any); ok {
@@ -471,11 +472,16 @@ func startManagedBrowser(
 	claim *browseragentapi.CodexOAuthClaim,
 	geo *proxyGeoIdentity,
 ) (*exec.Cmd, error) {
-	launchArgs, err := buildBrowserLaunchArgs(profileDir, fingerprintFile, proxyURL, startURL, claim, geo)
+	fingerprintConfig, err := os.ReadFile(fingerprintFile)
+	if err != nil {
+		return nil, fmt.Errorf("read managed fingerprint config: %w", err)
+	}
+	fingerprintConfigJSON := base64.StdEncoding.EncodeToString(fingerprintConfig)
+	launchArgs, err := buildBrowserLaunchArgs(profileDir, fingerprintFile, fingerprintConfigJSON, proxyURL, startURL, claim, geo)
 	if err != nil {
 		return nil, err
 	}
-	environment, err := buildBrowserEnvironment(profileDir, fingerprintFile, proxyURL, startURL, claim, geo)
+	environment, err := buildBrowserEnvironment(profileDir, fingerprintFile, fingerprintConfigJSON, proxyURL, startURL, claim, geo)
 	if err != nil {
 		return nil, err
 	}
@@ -490,15 +496,18 @@ func startManagedBrowser(
 	return command, nil
 }
 
-func buildBrowserLaunchArgs(profileDir string, fingerprintFile string, proxyURL string, startURL string, claim *browseragentapi.CodexOAuthClaim, geo *proxyGeoIdentity) ([]string, error) {
+func buildBrowserLaunchArgs(profileDir string, fingerprintFile string, fingerprintConfigJSON string, proxyURL string, startURL string, claim *browseragentapi.CodexOAuthClaim, geo *proxyGeoIdentity) ([]string, error) {
 	var configured []string
 	if err := common.UnmarshalJsonStr(claim.Fingerprint.LaunchArgs, &configured); err != nil {
 		return nil, errors.New("fingerprint launch arguments are invalid")
 	}
 	replacements := browserTemplateReplacements(profileDir, fingerprintFile, proxyURL, startURL, claim, geo)
-	args := make([]string, 0, len(configured)+10)
+	args := make([]string, 0, len(configured)+12)
 	for _, argument := range configured {
 		argument = replaceBrowserTemplate(argument, replacements)
+		if managedFingerprintArgument(argument) {
+			continue
+		}
 		if forbiddenBrowserArgument(argument) {
 			return nil, fmt.Errorf("fingerprint launch argument %q conflicts with an agent-enforced setting", argument)
 		}
@@ -507,6 +516,8 @@ func buildBrowserLaunchArgs(profileDir string, fingerprintFile string, proxyURL 
 
 	args = append(args,
 		"--user-data-dir="+profileDir,
+		"--transfigure-fingerprint-config="+fingerprintFile,
+		"--transfigure-fingerprint-config-json="+fingerprintConfigJSON,
 		"--proxy-server="+proxyURL,
 		"--proxy-bypass-list=<-loopback>;localhost;127.0.0.1;[::1]",
 		"--disable-quic",
@@ -528,7 +539,7 @@ func buildBrowserLaunchArgs(profileDir string, fingerprintFile string, proxyURL 
 	return args, nil
 }
 
-func buildBrowserEnvironment(profileDir string, fingerprintFile string, proxyURL string, startURL string, claim *browseragentapi.CodexOAuthClaim, geo *proxyGeoIdentity) ([]string, error) {
+func buildBrowserEnvironment(profileDir string, fingerprintFile string, fingerprintConfigJSON string, proxyURL string, startURL string, claim *browseragentapi.CodexOAuthClaim, geo *proxyGeoIdentity) ([]string, error) {
 	var configured map[string]string
 	if err := common.UnmarshalJsonStr(claim.Fingerprint.Environment, &configured); err != nil {
 		return nil, errors.New("fingerprint environment is invalid")
@@ -550,6 +561,8 @@ func buildBrowserEnvironment(profileDir string, fingerprintFile string, proxyURL
 	}
 	posixLocale := strings.ReplaceAll(geo.Locale, "-", "_") + ".UTF-8"
 	environment = append(environment,
+		"TRANSFIGURE_FINGERPRINT_CONFIG="+fingerprintFile,
+		"TRANSFIGURE_FINGERPRINT_CONFIG_JSON="+fingerprintConfigJSON,
 		"TZ="+geo.Timezone,
 		"LANG="+posixLocale,
 		"LANGUAGE="+geo.Locale,
@@ -598,6 +611,8 @@ func forbiddenBrowserArgument(argument string) bool {
 		"--window-size",
 		"--force-time-zone-for-testing",
 		"--force-webrtc-ip-handling-policy",
+		"--transfigure-fingerprint-config",
+		"--transfigure-fingerprint-config-json",
 		"--enable-quic",
 		"--disable-quic",
 		"--origin-to-force-quic-on",
@@ -605,6 +620,19 @@ func forbiddenBrowserArgument(argument string) bool {
 		"--remote-debugging-address",
 		"--remote-debugging-port",
 		"--remote-debugging-pipe",
+	} {
+		if lower == prefix || strings.HasPrefix(lower, prefix+"=") {
+			return true
+		}
+	}
+	return false
+}
+
+func managedFingerprintArgument(argument string) bool {
+	lower := strings.ToLower(strings.TrimSpace(argument))
+	for _, prefix := range []string{
+		"--transfigure-fingerprint-config",
+		"--transfigure-fingerprint-config-json",
 	} {
 		if lower == prefix || strings.HasPrefix(lower, prefix+"=") {
 			return true
@@ -638,6 +666,7 @@ func managedBrowserEnvironmentKey(key string) bool {
 	_, managed := map[string]struct{}{
 		"TZ": {}, "LANG": {}, "LANGUAGE": {},
 		"HTTP_PROXY": {}, "HTTPS_PROXY": {}, "ALL_PROXY": {}, "NO_PROXY": {},
+		"TRANSFIGURE_FINGERPRINT_CONFIG": {}, "TRANSFIGURE_FINGERPRINT_CONFIG_JSON": {},
 	}[upper]
 	return managed
 }

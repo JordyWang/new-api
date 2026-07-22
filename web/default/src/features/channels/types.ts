@@ -410,6 +410,13 @@ export type ManagedProxy = {
   profile_count: number
 }
 
+export type BrowserRuntimeOption = {
+  agent_id: number
+  agent_name: string
+  runtime_key: string
+  profile_count: number
+}
+
 export type CodexBrowserOAuthFlowStatus =
   | 'pending'
   | 'claimed'

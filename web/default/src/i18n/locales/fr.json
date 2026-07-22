@@ -5404,6 +5404,16 @@
     "No Invitation Codes Found": "Aucun code d’invitation trouvé",
     "Set to 0 for unlimited registrations": "Définissez 0 pour des inscriptions illimitées",
     "This will permanently delete invitation code {{code}}. This action cannot be undone.": "Le code d’invitation {{code}} sera définitivement supprimé. Cette action est irréversible.",
-    "Update Invitation Code": "Modifier le code d’invitation"
+    "Update Invitation Code": "Modifier le code d’invitation",
+    "Automatically generate fingerprint": "Générer automatiquement l’empreinte",
+    "Generate one coherent fingerprint when the Profile is created and reuse it for every launch.": "Générer une empreinte cohérente à la création du profil et la réutiliser à chaque lancement.",
+    "Create an agent and a proxy in Proxy Management first": "Créez d’abord un agent et un proxy dans la gestion des proxys",
+    "Failed to load browser runtimes": "Échec du chargement des environnements du navigateur",
+    "Select a browser runtime": "Sélectionnez un environnement du navigateur",
+    "Generated browser profile": "Profil de navigateur généré",
+    "Automatically create a fixed Profile and fingerprint": "Créer automatiquement un profil et une empreinte fixes",
+    "Browser runtime": "Environnement du navigateur",
+    "A coherent fingerprint is generated once, stored with the new Profile, and reused for every browser launch.": "Une empreinte cohérente est générée une seule fois, stockée avec le nouveau profil et réutilisée à chaque lancement du navigateur.",
+    "Failed to load automatic Profile options": "Échec du chargement des options de profil automatique"
   }
 }
