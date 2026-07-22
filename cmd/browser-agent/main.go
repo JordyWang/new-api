@@ -276,6 +276,7 @@ func (client *agentClient) heartbeat(ctx context.Context, instanceId string, run
 			"hostname": hostname,
 			"capabilities": []string{
 				browseragentapi.CapabilityStrictProxyGeoV1,
+				browseragentapi.CapabilityProxyGeoOverlayV1,
 			},
 		},
 	}

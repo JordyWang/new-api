@@ -68,16 +68,6 @@ function createFingerprintSchema(t: TFunction) {
       .min(1, t('Name is required'))
       .max(128, t('Name must not exceed 128 characters')),
     user_agent: z.string().trim(),
-    locale: z
-      .string()
-      .trim()
-      .min(1, t('Locale is required'))
-      .max(64, t('Locale must not exceed 64 characters')),
-    timezone: z
-      .string()
-      .trim()
-      .min(1, t('Timezone is required'))
-      .max(128, t('Timezone must not exceed 128 characters')),
     viewport_width: z
       .number()
       .int(t('Viewport width must be a whole number'))
@@ -145,8 +135,6 @@ function defaultValues(
   return {
     name: fingerprint?.name ?? '',
     user_agent: fingerprint?.user_agent ?? '',
-    locale: fingerprint?.locale ?? 'en-US',
-    timezone: fingerprint?.timezone ?? 'UTC',
     viewport_width: fingerprint?.viewport_width ?? 1280,
     viewport_height: fingerprint?.viewport_height ?? 800,
     payload: fingerprint?.payload ?? '{}',
@@ -258,32 +246,6 @@ export function FingerprintDialog(props: FingerprintDialogProps) {
                     <FormLabel>{t('User Agent')}</FormLabel>
                     <FormControl>
                       <Input {...field} autoComplete='off' />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={form.control}
-                name='locale'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>{t('Locale')}</FormLabel>
-                    <FormControl>
-                      <Input {...field} placeholder='en-US' />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={form.control}
-                name='timezone'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>{t('Timezone')}</FormLabel>
-                    <FormControl>
-                      <Input {...field} placeholder='America/Los_Angeles' />
                     </FormControl>
                     <FormMessage />
                   </FormItem>

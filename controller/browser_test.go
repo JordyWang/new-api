@@ -34,27 +34,40 @@ func TestFingerprintEnvironmentRejectsEncodedPayloadOverLimit(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestBrowserFingerprintRequiresValidLocaleAndTimezone(t *testing.T) {
+func TestBrowserFingerprintStoresRegionNeutralCorePayload(t *testing.T) {
 	request := browserFingerprintRequest{
-		Name:        "managed",
-		Locale:      "en-US",
-		Timezone:    "America/Los_Angeles",
-		ViewportW:   1280,
-		ViewportH:   800,
-		Payload:     `{}`,
+		Name:      "managed",
+		ViewportW: 1280,
+		ViewportH: 800,
+		Payload: `{
+			"timezone":"America/Los_Angeles",
+			"geo_overlay":{"country_code":"US"},
+			"fingerprint":{
+				"accept_language":"en-US,en",
+				"timezone":"America/Los_Angeles",
+				"canvas":{"noise_seed":"fixed-core"},
+				"navigator":{"language":"en-US","languages":["en-US","en"],"platform":"Linux x86_64"}
+			}
+		}`,
 		LaunchArgs:  `[]`,
 		Environment: `{}`,
 	}
 
-	_, err := normalizeBrowserFingerprintRequest(request, nil)
+	fingerprint, err := normalizeBrowserFingerprintRequest(request, nil)
 	require.NoError(t, err)
 
-	request.Locale = "not_a_locale!"
-	_, err = normalizeBrowserFingerprintRequest(request, nil)
-	assert.ErrorContains(t, err, "locale")
-
-	request.Locale = "en-US"
-	request.Timezone = "Mars/Olympus"
-	_, err = normalizeBrowserFingerprintRequest(request, nil)
-	assert.ErrorContains(t, err, "timezone")
+	var payload map[string]any
+	require.NoError(t, common.UnmarshalJsonStr(fingerprint.Payload, &payload))
+	assert.NotContains(t, payload, "timezone")
+	assert.NotContains(t, payload, "geo_overlay")
+	core, ok := payload["fingerprint"].(map[string]any)
+	require.True(t, ok)
+	assert.NotContains(t, core, "accept_language")
+	assert.NotContains(t, core, "timezone")
+	assert.Equal(t, map[string]any{"noise_seed": "fixed-core"}, core["canvas"])
+	navigator, ok := core["navigator"].(map[string]any)
+	require.True(t, ok)
+	assert.NotContains(t, navigator, "language")
+	assert.NotContains(t, navigator, "languages")
+	assert.Equal(t, "Linux x86_64", navigator["platform"])
 }

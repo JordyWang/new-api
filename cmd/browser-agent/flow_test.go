@@ -4,6 +4,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -44,27 +45,32 @@ func TestAgentRejectsDangerousBrowserEnvironmentVariables(t *testing.T) {
 	assert.False(t, forbiddenBrowserEnvironmentKey("FINGERPRINT_PROFILE"))
 }
 
-func TestManagedBrowserEnforcesProxyLocaleAndTimezone(t *testing.T) {
+func TestManagedBrowserUsesProxyGeoOverlay(t *testing.T) {
 	claim := &browseragentapi.CodexOAuthClaim{
 		AuthorizeURL: "https://auth.openai.com/oauth/authorize?state=test",
 		Fingerprint: browseragentapi.CodexOAuthFingerprint{
 			UserAgent:   "managed-agent",
-			Locale:      "en-US",
-			Timezone:    "America/Los_Angeles",
 			ViewportW:   1280,
 			ViewportH:   800,
 			LaunchArgs:  `[]`,
 			Environment: `{"FINGERPRINT_PROFILE":"managed"}`,
 		},
 	}
+	geo := &proxyGeoIdentity{
+		CountryCode:    "SG",
+		Locale:         "en-SG",
+		Timezone:       "Asia/Singapore",
+		Languages:      []string{"en-SG", "en", "cmn"},
+		AcceptLanguage: "en-SG,en,cmn",
+	}
 
 	preflightURL := "http://127.0.0.1:1455/browser/preflight?token=test"
-	args, err := buildBrowserLaunchArgs("/profiles/test", "/profiles/test/fingerprint.json", "http://127.0.0.1:3000", preflightURL, claim)
+	args, err := buildBrowserLaunchArgs("/profiles/test", "/profiles/test/fingerprint.json", "http://127.0.0.1:3000", preflightURL, claim, geo)
 	require.NoError(t, err)
 	assert.Contains(t, args, "--proxy-server=http://127.0.0.1:3000")
 	assert.Contains(t, args, "--proxy-bypass-list=<-loopback>;localhost;127.0.0.1;[::1]")
-	assert.Contains(t, args, "--lang=en-US")
-	assert.Contains(t, args, "--force-time-zone-for-testing=America/Los_Angeles")
+	assert.Contains(t, args, "--lang=en-SG")
+	assert.Contains(t, args, "--force-time-zone-for-testing=Asia/Singapore")
 	assert.Contains(t, args, "--force-webrtc-ip-handling-policy=disable_non_proxied_udp")
 	assert.Contains(t, args, "--disable-quic")
 	assert.Equal(t, preflightURL, args[len(args)-1])
@@ -73,7 +79,7 @@ func TestManagedBrowserEnforcesProxyLocaleAndTimezone(t *testing.T) {
 	t.Setenv("TZ", "UTC")
 	t.Setenv("LANG", "fr_FR.UTF-8")
 	t.Setenv("HTTP_PROXY", "http://unmanaged.example:8080")
-	environment, err := buildBrowserEnvironment("/profiles/test", "/profiles/test/fingerprint.json", "http://127.0.0.1:3000", preflightURL, claim)
+	environment, err := buildBrowserEnvironment("/profiles/test", "/profiles/test/fingerprint.json", "http://127.0.0.1:3000", preflightURL, claim, geo)
 	require.NoError(t, err)
 	environmentValues := make(map[string]string, len(environment))
 	for _, item := range environment {
@@ -82,43 +88,99 @@ func TestManagedBrowserEnforcesProxyLocaleAndTimezone(t *testing.T) {
 			environmentValues[strings.ToUpper(key)] = value
 		}
 	}
-	assert.Equal(t, "America/Los_Angeles", environmentValues["TZ"])
-	assert.Equal(t, "en_US.UTF-8", environmentValues["LANG"])
-	assert.Equal(t, "en-US", environmentValues["LANGUAGE"])
+	assert.Equal(t, "Asia/Singapore", environmentValues["TZ"])
+	assert.Equal(t, "en_SG.UTF-8", environmentValues["LANG"])
+	assert.Equal(t, "en-SG", environmentValues["LANGUAGE"])
 	assert.Equal(t, "http://127.0.0.1:3000", environmentValues["HTTP_PROXY"])
 	assert.Equal(t, "http://127.0.0.1:3000", environmentValues["HTTPS_PROXY"])
 	assert.Equal(t, "localhost,127.0.0.1,::1", environmentValues["NO_PROXY"])
 }
 
-func TestBrowserFingerprintPreflightVerifiesReportedValues(t *testing.T) {
-	fingerprint := browseragentapi.CodexOAuthFingerprint{
-		Locale:   "en-US",
-		Timezone: "America/Los_Angeles",
+func TestFingerprintFileCombinesFixedCoreWithProxyGeoOverlay(t *testing.T) {
+	geo := &proxyGeoIdentity{
+		CountryCode:    "SG",
+		Locale:         "en-SG",
+		Timezone:       "Asia/Singapore",
+		Languages:      []string{"en-SG", "en", "cmn"},
+		AcceptLanguage: "en-SG,en,cmn",
+	}
+	path, err := writeFingerprintPayload(t.TempDir(), `{
+		"profile_id":"fixed-core-v1",
+		"geo_overlay":{"country_code":"US"},
+		"fingerprint":{
+			"accept_language":"en-US,en",
+			"timezone":"America/Los_Angeles",
+			"canvas":{"noise_seed":"fixed-core"}
+		}
+	}`, geo)
+	require.NoError(t, err)
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	var rendered struct {
+		ProfileId   string `json:"profile_id"`
+		Fingerprint struct {
+			AcceptLanguage string            `json:"accept_language"`
+			Timezone       string            `json:"timezone"`
+			Canvas         map[string]string `json:"canvas"`
+		} `json:"fingerprint"`
+		GeoOverlay struct {
+			CountryCode string   `json:"country_code"`
+			Locale      string   `json:"locale"`
+			Timezone    string   `json:"timezone"`
+			Languages   []string `json:"languages"`
+		} `json:"geo_overlay"`
+	}
+	require.NoError(t, common.Unmarshal(data, &rendered))
+	assert.Equal(t, "fixed-core-v1", rendered.ProfileId)
+	assert.Equal(t, "fixed-core", rendered.Fingerprint.Canvas["noise_seed"])
+	assert.Equal(t, "en-SG,en,cmn", rendered.Fingerprint.AcceptLanguage)
+	assert.Equal(t, "Asia/Singapore", rendered.Fingerprint.Timezone)
+	assert.Equal(t, "SG", rendered.GeoOverlay.CountryCode)
+	assert.Equal(t, "en-SG", rendered.GeoOverlay.Locale)
+	assert.Equal(t, "Asia/Singapore", rendered.GeoOverlay.Timezone)
+	assert.Equal(t, []string{"en-SG", "en", "cmn"}, rendered.GeoOverlay.Languages)
+}
+
+func TestFingerprintFileRejectsNullPayload(t *testing.T) {
+	geo := &proxyGeoIdentity{
+		CountryCode:    "SG",
+		Locale:         "en-SG",
+		Timezone:       "Asia/Singapore",
+		Languages:      []string{"en-SG", "en"},
+		AcceptLanguage: "en-SG,en",
 	}
 
-	require.NoError(t, validateBrowserReportedFingerprint(browserFingerprintReport{
+	_, err := writeFingerprintPayload(t.TempDir(), `null`, geo)
+
+	assert.ErrorContains(t, err, "JSON object")
+}
+
+func TestBrowserGeoPreflightVerifiesReportedValues(t *testing.T) {
+	geo := &proxyGeoIdentity{Locale: "en-US", Timezone: "America/Los_Angeles"}
+
+	require.NoError(t, validateBrowserReportedGeo(browserGeoReport{
 		Locale:    "en-US",
 		Languages: []string{"en-US", "en"},
 		Timezone:  "America/Los_Angeles",
-	}, fingerprint))
+	}, geo))
 
-	for _, report := range []browserFingerprintReport{
+	for _, report := range []browserGeoReport{
 		{Locale: "fr-FR", Languages: []string{"fr-FR"}, Timezone: "America/Los_Angeles"},
 		{Locale: "en-US", Languages: []string{"en-US"}, Timezone: "UTC"},
 		{Locale: "", Languages: nil, Timezone: "America/Los_Angeles"},
 	} {
-		assert.Error(t, validateBrowserReportedFingerprint(report, fingerprint))
+		assert.Error(t, validateBrowserReportedGeo(report, geo))
 	}
 }
 
-func TestOAuthCallbackRequiresSuccessfulBrowserFingerprintPreflight(t *testing.T) {
+func TestOAuthCallbackRequiresSuccessfulBrowserGeoPreflight(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	callback := serveOAuthCallbackServer(
 		listener,
 		"test-state",
 		"https://auth.openai.com/oauth/authorize?state=test-state",
-		browseragentapi.CodexOAuthFingerprint{Locale: "en-US", Timezone: "America/Los_Angeles"},
+		&proxyGeoIdentity{Locale: "en-US", Timezone: "America/Los_Angeles"},
 	)
 	t.Cleanup(callback.Close)
 	client := &http.Client{Timeout: 2 * time.Second}

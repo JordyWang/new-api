@@ -13,7 +13,6 @@ import (
 	_ "time/tzdata"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/pkg/browseragentapi"
 
 	"golang.org/x/text/language"
 )
@@ -24,10 +23,12 @@ const (
 )
 
 type proxyGeoIdentity struct {
-	IP          string
-	CountryCode string
-	Timezone    string
-	Languages   []string
+	IP             string
+	CountryCode    string
+	Locale         string
+	Timezone       string
+	Languages      []string
+	AcceptLanguage string
 }
 
 func validateGeoIPURL(rawURL string) (string, error) {
@@ -61,7 +62,6 @@ func verifyProxyGeoIdentity(
 	ctx context.Context,
 	localProxyURL string,
 	geoIPURL string,
-	fingerprint browseragentapi.CodexOAuthFingerprint,
 ) (*proxyGeoIdentity, error) {
 	proxyURL, err := url.Parse(strings.TrimSpace(localProxyURL))
 	if err != nil || proxyURL.Scheme != "http" || proxyURL.Host == "" || proxyURL.User != nil {
@@ -141,21 +141,8 @@ func verifyProxyGeoIdentity(
 	if _, err := time.LoadLocation(timezone); err != nil {
 		return nil, errors.New("GeoIP response timezone is invalid")
 	}
-	fingerprintTimezone := strings.TrimSpace(fingerprint.Timezone)
-	if _, err := time.LoadLocation(fingerprintTimezone); err != nil {
-		return nil, errors.New("browser fingerprint timezone is invalid")
-	}
-	if fingerprintTimezone != timezone {
-		return nil, fmt.Errorf("browser fingerprint timezone %q does not match proxy exit timezone %q", fingerprintTimezone, timezone)
-	}
-
-	fingerprintLocale, err := language.Parse(strings.TrimSpace(fingerprint.Locale))
-	if err != nil {
-		return nil, errors.New("browser fingerprint locale is invalid")
-	}
 	languageValues := strings.Split(payload.Languages, ",")
-	languages := make([]string, 0, len(languageValues))
-	localeMatches := false
+	parsedLanguages := make([]language.Tag, 0, len(languageValues))
 	for _, value := range languageValues {
 		value = strings.TrimSpace(value)
 		if value == "" {
@@ -165,22 +152,100 @@ func verifyProxyGeoIdentity(
 		if err != nil {
 			return nil, errors.New("GeoIP response languages are invalid")
 		}
-		languages = append(languages, parsedLanguage.String())
-		if parsedLanguage == fingerprintLocale {
-			localeMatches = true
-		}
+		parsedLanguages = append(parsedLanguages, parsedLanguage)
 	}
-	if len(languages) == 0 {
+	if len(parsedLanguages) == 0 {
 		return nil, errors.New("GeoIP response languages are missing")
 	}
-	if !localeMatches {
-		return nil, fmt.Errorf("browser fingerprint locale %q does not match proxy exit languages %q", fingerprint.Locale, payload.Languages)
+	locale, languages, err := deriveProxyGeoLanguages(countryCode, parsedLanguages)
+	if err != nil {
+		return nil, err
 	}
 
 	return &proxyGeoIdentity{
-		IP:          ipText,
-		CountryCode: countryCode,
-		Timezone:    timezone,
-		Languages:   languages,
+		IP:             ipText,
+		CountryCode:    countryCode,
+		Locale:         locale,
+		Timezone:       timezone,
+		Languages:      languages,
+		AcceptLanguage: strings.Join(languages, ","),
 	}, nil
+}
+
+func deriveProxyGeoLanguages(countryCode string, geoLanguages []language.Tag) (string, []string, error) {
+	if len(geoLanguages) == 0 {
+		return "", nil, errors.New("GeoIP response languages are missing")
+	}
+	selectedIndex := -1
+	regionalIndex := -1
+	bareIndex := -1
+	bareEnglishIndex := -1
+	for index, tag := range geoLanguages {
+		base, _, region := tag.Raw()
+		if region.String() == "ZZ" {
+			if bareIndex < 0 {
+				bareIndex = index
+			}
+			if base.String() == "en" && bareEnglishIndex < 0 {
+				bareEnglishIndex = index
+			}
+			continue
+		}
+		if region.String() != countryCode {
+			continue
+		}
+		if regionalIndex < 0 {
+			regionalIndex = index
+		}
+		if base.String() == "en" {
+			selectedIndex = index
+			break
+		}
+	}
+	if selectedIndex < 0 {
+		selectedIndex = regionalIndex
+	}
+	if selectedIndex < 0 {
+		selectedIndex = bareEnglishIndex
+	}
+	if selectedIndex < 0 {
+		selectedIndex = bareIndex
+	}
+	if selectedIndex < 0 {
+		return "", nil, errors.New("GeoIP response languages do not match country_code")
+	}
+
+	selected := geoLanguages[selectedIndex]
+	_, _, selectedRegion := selected.Raw()
+	if selectedRegion.String() == "ZZ" {
+		regionalized, err := language.Parse(selected.String() + "-" + countryCode)
+		if err != nil {
+			return "", nil, errors.New("GeoIP response languages cannot form a regional locale")
+		}
+		selected = regionalized
+	}
+	locale := selected.String()
+	base, _, _ := selected.Raw()
+	baseLanguage := base.String()
+	languages := make([]string, 0, len(geoLanguages)+2)
+	seen := make(map[string]struct{}, len(geoLanguages)+2)
+	orderedValues := []string{locale, baseLanguage}
+	for _, tag := range geoLanguages {
+		_, _, region := tag.Raw()
+		if region.String() != "ZZ" && region.String() != countryCode {
+			continue
+		}
+		orderedValues = append(orderedValues, tag.String())
+	}
+	for _, value := range orderedValues {
+		if value == "" || value == "und" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		languages = append(languages, value)
+	}
+	return locale, languages, nil
 }

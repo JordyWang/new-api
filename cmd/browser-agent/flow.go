@@ -33,7 +33,7 @@ type callbackResult struct {
 	Error string
 }
 
-type browserFingerprintReport struct {
+type browserGeoReport struct {
 	Locale    string   `json:"locale"`
 	Languages []string `json:"languages"`
 	Timezone  string   `json:"timezone"`
@@ -67,17 +67,12 @@ func executeOAuthFlow(parent context.Context, client *agentClient, instanceId st
 	}
 	defer cleanupProfile()
 
-	fingerprintFile, err := writeFingerprintPayload(profileDir, claim.Fingerprint.Payload)
-	if err != nil {
-		return err
-	}
-
 	forwardProxy, err := startLocalForwardProxy(claim.Proxy.URL)
 	if err != nil {
 		return fmt.Errorf("start local proxy: %w", err)
 	}
 	defer forwardProxy.Close()
-	proxyIdentity, err := verifyProxyGeoIdentity(ctx, forwardProxy.URL(), config.GeoIPURL, claim.Fingerprint)
+	proxyIdentity, err := verifyProxyGeoIdentity(ctx, forwardProxy.URL(), config.GeoIPURL)
 	if err != nil {
 		return fmt.Errorf("verify managed proxy geography: %w", err)
 	}
@@ -86,10 +81,14 @@ func executeOAuthFlow(parent context.Context, client *agentClient, instanceId st
 		proxyIdentity.IP,
 		proxyIdentity.CountryCode,
 		proxyIdentity.Timezone,
-		claim.Fingerprint.Locale,
+		proxyIdentity.Locale,
 	)
+	fingerprintFile, err := writeFingerprintPayload(profileDir, claim.Fingerprint.Payload, proxyIdentity)
+	if err != nil {
+		return err
+	}
 
-	callback, err := startOAuthCallbackServer(claim.State, claim.AuthorizeURL, claim.Fingerprint)
+	callback, err := startOAuthCallbackServer(claim.State, claim.AuthorizeURL, proxyIdentity)
 	if err != nil {
 		return fmt.Errorf("listen on OAuth callback port 1455: %w", err)
 	}
@@ -104,6 +103,7 @@ func executeOAuthFlow(parent context.Context, client *agentClient, instanceId st
 		forwardProxy.URL(),
 		preflightURL,
 		claim,
+		proxyIdentity,
 	)
 	if err != nil {
 		return err
@@ -132,7 +132,7 @@ func executeOAuthFlow(parent context.Context, client *agentClient, instanceId st
 			return ctx.Err()
 		case preflightErr := <-preflightResult:
 			if preflightErr != nil {
-				return fmt.Errorf("browser fingerprint preflight failed: %w", preflightErr)
+				return fmt.Errorf("browser geography preflight failed: %w", preflightErr)
 			}
 			if !preflightTimer.Stop() {
 				select {
@@ -141,10 +141,10 @@ func executeOAuthFlow(parent context.Context, client *agentClient, instanceId st
 				}
 			}
 			preflightResult = nil
-			log.Printf("browser fingerprint preflight verified for flow %s", claim.FlowId)
+			log.Printf("browser geography preflight verified for flow %s", claim.FlowId)
 		case <-preflightTimer.C:
 			if !callback.preflightVerified.Load() {
-				return errors.New("browser did not complete fingerprint preflight within 30 seconds")
+				return errors.New("browser did not complete geography preflight within 30 seconds")
 			}
 			preflightResult = nil
 		case result := <-callback.result:
@@ -153,9 +153,15 @@ func executeOAuthFlow(parent context.Context, client *agentClient, instanceId st
 				callback.complete(callbackErr)
 				return callbackErr
 			}
-			if _, geoErr := verifyProxyGeoIdentity(ctx, forwardProxy.URL(), config.GeoIPURL, claim.Fingerprint); geoErr != nil {
+			currentIdentity, geoErr := verifyProxyGeoIdentity(ctx, forwardProxy.URL(), config.GeoIPURL)
+			if geoErr != nil {
 				callback.complete(geoErr)
 				return fmt.Errorf("reverify managed proxy geography before token exchange: %w", geoErr)
+			}
+			if currentIdentity.IP != proxyIdentity.IP || currentIdentity.CountryCode != proxyIdentity.CountryCode || currentIdentity.Locale != proxyIdentity.Locale || currentIdentity.Timezone != proxyIdentity.Timezone || currentIdentity.AcceptLanguage != proxyIdentity.AcceptLanguage {
+				geoErr = errors.New("managed proxy exit identity changed during OAuth")
+				callback.complete(geoErr)
+				return geoErr
 			}
 			token, exchangeErr := exchangeCodexAuthorizationCode(ctx, result.Code, claim.Verifier, forwardProxy.URL())
 			if exchangeErr != nil {
@@ -253,10 +259,42 @@ func prepareProfileDirectory(root string, claim *browseragentapi.CodexOAuthClaim
 	return directory, func() {}, nil
 }
 
-func writeFingerprintPayload(profileDir string, payload string) (string, error) {
+func writeFingerprintPayload(profileDir string, payload string, geo *proxyGeoIdentity) (string, error) {
+	if geo == nil || geo.Locale == "" || geo.Timezone == "" || geo.AcceptLanguage == "" {
+		return "", errors.New("proxy geography overlay is incomplete")
+	}
 	var parsed map[string]any
 	if err := common.UnmarshalJsonStr(payload, &parsed); err != nil {
 		return "", errors.New("fingerprint payload is invalid")
+	}
+	if parsed == nil {
+		return "", errors.New("fingerprint payload must be a JSON object")
+	}
+	for _, key := range []string{"accept_language", "accept_languages", "country_code", "geo_overlay", "languages", "locale", "timezone", "timezone_id"} {
+		delete(parsed, key)
+	}
+	fingerprint, exists := parsed["fingerprint"].(map[string]any)
+	if !exists {
+		if parsed["fingerprint"] != nil {
+			return "", errors.New("fingerprint payload fingerprint field is invalid")
+		}
+		fingerprint = make(map[string]any)
+		parsed["fingerprint"] = fingerprint
+	}
+	for _, key := range []string{"accept_languages", "country_code", "geo_overlay", "languages", "locale", "timezone_id"} {
+		delete(fingerprint, key)
+	}
+	if navigator, ok := fingerprint["navigator"].(map[string]any); ok {
+		delete(navigator, "language")
+		delete(navigator, "languages")
+	}
+	fingerprint["accept_language"] = geo.AcceptLanguage
+	fingerprint["timezone"] = geo.Timezone
+	parsed["geo_overlay"] = map[string]any{
+		"country_code": geo.CountryCode,
+		"locale":       geo.Locale,
+		"timezone":     geo.Timezone,
+		"languages":    geo.Languages,
 	}
 	encoded, err := common.Marshal(parsed)
 	if err != nil {
@@ -281,12 +319,13 @@ func startManagedBrowser(
 	proxyURL string,
 	startURL string,
 	claim *browseragentapi.CodexOAuthClaim,
+	geo *proxyGeoIdentity,
 ) (*exec.Cmd, error) {
-	launchArgs, err := buildBrowserLaunchArgs(profileDir, fingerprintFile, proxyURL, startURL, claim)
+	launchArgs, err := buildBrowserLaunchArgs(profileDir, fingerprintFile, proxyURL, startURL, claim, geo)
 	if err != nil {
 		return nil, err
 	}
-	environment, err := buildBrowserEnvironment(profileDir, fingerprintFile, proxyURL, startURL, claim)
+	environment, err := buildBrowserEnvironment(profileDir, fingerprintFile, proxyURL, startURL, claim, geo)
 	if err != nil {
 		return nil, err
 	}
@@ -301,12 +340,12 @@ func startManagedBrowser(
 	return command, nil
 }
 
-func buildBrowserLaunchArgs(profileDir string, fingerprintFile string, proxyURL string, startURL string, claim *browseragentapi.CodexOAuthClaim) ([]string, error) {
+func buildBrowserLaunchArgs(profileDir string, fingerprintFile string, proxyURL string, startURL string, claim *browseragentapi.CodexOAuthClaim, geo *proxyGeoIdentity) ([]string, error) {
 	var configured []string
 	if err := common.UnmarshalJsonStr(claim.Fingerprint.LaunchArgs, &configured); err != nil {
 		return nil, errors.New("fingerprint launch arguments are invalid")
 	}
-	replacements := browserTemplateReplacements(profileDir, fingerprintFile, proxyURL, startURL, claim)
+	replacements := browserTemplateReplacements(profileDir, fingerprintFile, proxyURL, startURL, claim, geo)
 	args := make([]string, 0, len(configured)+10)
 	for _, argument := range configured {
 		argument = replaceBrowserTemplate(argument, replacements)
@@ -322,15 +361,15 @@ func buildBrowserLaunchArgs(profileDir string, fingerprintFile string, proxyURL 
 		"--proxy-bypass-list=<-loopback>;localhost;127.0.0.1;[::1]",
 		"--disable-quic",
 		"--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
-		"--force-time-zone-for-testing="+claim.Fingerprint.Timezone,
+		"--force-time-zone-for-testing="+geo.Timezone,
 		"--no-first-run",
 		"--no-default-browser-check",
 	)
 	if claim.Fingerprint.UserAgent != "" {
 		args = append(args, "--user-agent="+claim.Fingerprint.UserAgent)
 	}
-	if claim.Fingerprint.Locale != "" {
-		args = append(args, "--lang="+claim.Fingerprint.Locale)
+	if geo.Locale != "" {
+		args = append(args, "--lang="+geo.Locale)
 	}
 	if claim.Fingerprint.ViewportW > 0 && claim.Fingerprint.ViewportH > 0 {
 		args = append(args, "--window-size="+strconv.Itoa(claim.Fingerprint.ViewportW)+","+strconv.Itoa(claim.Fingerprint.ViewportH))
@@ -339,12 +378,12 @@ func buildBrowserLaunchArgs(profileDir string, fingerprintFile string, proxyURL 
 	return args, nil
 }
 
-func buildBrowserEnvironment(profileDir string, fingerprintFile string, proxyURL string, startURL string, claim *browseragentapi.CodexOAuthClaim) ([]string, error) {
+func buildBrowserEnvironment(profileDir string, fingerprintFile string, proxyURL string, startURL string, claim *browseragentapi.CodexOAuthClaim, geo *proxyGeoIdentity) ([]string, error) {
 	var configured map[string]string
 	if err := common.UnmarshalJsonStr(claim.Fingerprint.Environment, &configured); err != nil {
 		return nil, errors.New("fingerprint environment is invalid")
 	}
-	replacements := browserTemplateReplacements(profileDir, fingerprintFile, proxyURL, startURL, claim)
+	replacements := browserTemplateReplacements(profileDir, fingerprintFile, proxyURL, startURL, claim, geo)
 	environment := make([]string, 0, len(os.Environ())+len(configured)+8)
 	for _, item := range os.Environ() {
 		key, _, found := strings.Cut(item, "=")
@@ -359,11 +398,11 @@ func buildBrowserEnvironment(profileDir string, fingerprintFile string, proxyURL
 		}
 		environment = append(environment, key+"="+replaceBrowserTemplate(value, replacements))
 	}
-	posixLocale := strings.ReplaceAll(claim.Fingerprint.Locale, "-", "_") + ".UTF-8"
+	posixLocale := strings.ReplaceAll(geo.Locale, "-", "_") + ".UTF-8"
 	environment = append(environment,
-		"TZ="+claim.Fingerprint.Timezone,
+		"TZ="+geo.Timezone,
 		"LANG="+posixLocale,
-		"LANGUAGE="+claim.Fingerprint.Locale,
+		"LANGUAGE="+geo.Locale,
 		"LC_ALL="+posixLocale,
 		"HTTP_PROXY="+proxyURL,
 		"HTTPS_PROXY="+proxyURL,
@@ -373,15 +412,15 @@ func buildBrowserEnvironment(profileDir string, fingerprintFile string, proxyURL
 	return environment, nil
 }
 
-func browserTemplateReplacements(profileDir string, fingerprintFile string, proxyURL string, startURL string, claim *browseragentapi.CodexOAuthClaim) map[string]string {
+func browserTemplateReplacements(profileDir string, fingerprintFile string, proxyURL string, startURL string, claim *browseragentapi.CodexOAuthClaim, geo *proxyGeoIdentity) map[string]string {
 	return map[string]string{
 		"{profile_dir}":         profileDir,
 		"{fingerprint_file}":    fingerprintFile,
 		"{proxy_server}":        proxyURL,
 		"{authorize_url}":       startURL,
 		"{oauth_preflight_url}": startURL,
-		"{locale}":              claim.Fingerprint.Locale,
-		"{timezone}":            claim.Fingerprint.Timezone,
+		"{locale}":              geo.Locale,
+		"{timezone}":            geo.Timezone,
 		"{user_agent}":          claim.Fingerprint.UserAgent,
 		"{viewport_width}":      strconv.Itoa(claim.Fingerprint.ViewportW),
 		"{viewport_height}":     strconv.Itoa(claim.Fingerprint.ViewportH),
@@ -453,17 +492,20 @@ func managedBrowserEnvironmentKey(key string) bool {
 	return managed
 }
 
-func validateBrowserReportedFingerprint(report browserFingerprintReport, fingerprint browseragentapi.CodexOAuthFingerprint) error {
+func validateBrowserReportedGeo(report browserGeoReport, geo *proxyGeoIdentity) error {
+	if geo == nil {
+		return errors.New("proxy geography overlay is missing")
+	}
 	reportedLocale, err := language.Parse(strings.TrimSpace(report.Locale))
 	if err != nil {
 		return errors.New("browser reported an invalid locale")
 	}
-	expectedLocale, err := language.Parse(strings.TrimSpace(fingerprint.Locale))
+	expectedLocale, err := language.Parse(strings.TrimSpace(geo.Locale))
 	if err != nil {
-		return errors.New("configured browser locale is invalid")
+		return errors.New("proxy geography locale is invalid")
 	}
 	if reportedLocale != expectedLocale {
-		return fmt.Errorf("browser locale %q does not match configured locale %q", report.Locale, fingerprint.Locale)
+		return fmt.Errorf("browser locale %q does not match proxy geography locale %q", report.Locale, geo.Locale)
 	}
 	languageFound := false
 	for _, reportedLanguage := range report.Languages {
@@ -474,10 +516,10 @@ func validateBrowserReportedFingerprint(report browserFingerprintReport, fingerp
 		}
 	}
 	if !languageFound {
-		return fmt.Errorf("browser languages do not contain configured locale %q", fingerprint.Locale)
+		return fmt.Errorf("browser languages do not contain proxy geography locale %q", geo.Locale)
 	}
-	if strings.TrimSpace(report.Timezone) != strings.TrimSpace(fingerprint.Timezone) {
-		return fmt.Errorf("browser timezone %q does not match configured timezone %q", report.Timezone, fingerprint.Timezone)
+	if strings.TrimSpace(report.Timezone) != strings.TrimSpace(geo.Timezone) {
+		return fmt.Errorf("browser timezone %q does not match proxy geography timezone %q", report.Timezone, geo.Timezone)
 	}
 	return nil
 }
@@ -490,7 +532,7 @@ const browserFingerprintPreflightPage = `<!doctype html>
   <title>Browser verification</title>
 </head>
 <body>
-  <p id="status">Verifying managed browser fingerprint…</p>
+  <p id="status">Verifying managed browser geography…</p>
   <script>
     (async () => {
       const response = await fetch(window.location.pathname + window.location.search, {
@@ -506,21 +548,21 @@ const browserFingerprintPreflightPage = `<!doctype html>
       const result = await response.json();
       window.location.replace(result.authorize_url);
     })().catch((error) => {
-      document.getElementById('status').textContent = 'Browser fingerprint verification failed: ' + error.message;
+      document.getElementById('status').textContent = 'Browser geography verification failed: ' + error.message;
     });
   </script>
 </body>
 </html>`
 
-func startOAuthCallbackServer(expectedState string, authorizeURL string, fingerprint browseragentapi.CodexOAuthFingerprint) (*oauthCallbackServer, error) {
+func startOAuthCallbackServer(expectedState string, authorizeURL string, geo *proxyGeoIdentity) (*oauthCallbackServer, error) {
 	listener, err := net.Listen("tcp", "127.0.0.1:1455")
 	if err != nil {
 		return nil, err
 	}
-	return serveOAuthCallbackServer(listener, expectedState, authorizeURL, fingerprint), nil
+	return serveOAuthCallbackServer(listener, expectedState, authorizeURL, geo), nil
 }
 
-func serveOAuthCallbackServer(listener net.Listener, expectedState string, authorizeURL string, fingerprint browseragentapi.CodexOAuthFingerprint) *oauthCallbackServer {
+func serveOAuthCallbackServer(listener net.Listener, expectedState string, authorizeURL string, geo *proxyGeoIdentity) *oauthCallbackServer {
 	callback := &oauthCallbackServer{
 		listener:   listener,
 		result:     make(chan callbackResult, 1),
@@ -542,14 +584,14 @@ func serveOAuthCallbackServer(listener net.Listener, expectedState string, autho
 			_, _ = response.Write([]byte(browserFingerprintPreflightPage))
 		case http.MethodPost:
 			request.Body = http.MaxBytesReader(response, request.Body, 16*1024)
-			var report browserFingerprintReport
+			var report browserGeoReport
 			if err := common.DecodeJson(request.Body, &report); err != nil {
-				preflightErr := errors.New("browser fingerprint report is invalid")
+				preflightErr := errors.New("browser geography report is invalid")
 				callback.preflightOnce.Do(func() { callback.preflight <- preflightErr })
 				http.Error(response, preflightErr.Error(), http.StatusBadRequest)
 				return
 			}
-			if err := validateBrowserReportedFingerprint(report, fingerprint); err != nil {
+			if err := validateBrowserReportedGeo(report, geo); err != nil {
 				callback.preflightOnce.Do(func() { callback.preflight <- err })
 				http.Error(response, err.Error(), http.StatusConflict)
 				return
@@ -574,7 +616,7 @@ func serveOAuthCallbackServer(listener net.Listener, expectedState string, autho
 			return
 		}
 		if !callback.preflightVerified.Load() {
-			http.Error(response, "browser fingerprint preflight is incomplete", http.StatusConflict)
+			http.Error(response, "browser geography preflight is incomplete", http.StatusConflict)
 			return
 		}
 		state := request.URL.Query().Get("state")

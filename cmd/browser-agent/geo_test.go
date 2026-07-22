@@ -7,13 +7,12 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/QuantumNous/new-api/pkg/browseragentapi"
-
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/text/language"
 )
 
-func TestVerifyProxyGeoIdentityUsesProxyAndMatchesFingerprint(t *testing.T) {
+func TestVerifyProxyGeoIdentityUsesProxyAndDerivesRegionalOverlay(t *testing.T) {
 	var directRequests atomic.Int32
 	directTarget := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		directRequests.Add(1)
@@ -26,7 +25,7 @@ func TestVerifyProxyGeoIdentityUsesProxyAndMatchesFingerprint(t *testing.T) {
 		proxyRequests.Add(1)
 		assert.Equal(t, directTarget.URL+"/", request.URL.String())
 		response.Header().Set("Content-Type", "application/json")
-		_, _ = response.Write([]byte(`{"ip":"8.8.8.8","country_code":"US","timezone":"America/Los_Angeles","languages":"en-US,es-US"}`))
+		_, _ = response.Write([]byte(`{"ip":"8.8.8.8","country_code":"SG","timezone":"Asia/Singapore","languages":"cmn,en-SG,ms-SG,ta-SG,zh-SG"}`))
 	}))
 	t.Cleanup(proxyServer.Close)
 
@@ -34,14 +33,14 @@ func TestVerifyProxyGeoIdentityUsesProxyAndMatchesFingerprint(t *testing.T) {
 		context.Background(),
 		proxyServer.URL,
 		directTarget.URL,
-		browseragentapi.CodexOAuthFingerprint{
-			Locale:   "en-US",
-			Timezone: "America/Los_Angeles",
-		},
 	)
 	require.NoError(t, err)
 	assert.Equal(t, "8.8.8.8", identity.IP)
-	assert.Equal(t, "US", identity.CountryCode)
+	assert.Equal(t, "SG", identity.CountryCode)
+	assert.Equal(t, "en-SG", identity.Locale)
+	assert.Equal(t, "Asia/Singapore", identity.Timezone)
+	assert.Equal(t, []string{"en-SG", "en", "cmn", "ms-SG", "ta-SG", "zh-SG"}, identity.Languages)
+	assert.Equal(t, "en-SG,en,cmn,ms-SG,ta-SG,zh-SG", identity.AcceptLanguage)
 	assert.Equal(t, int32(1), proxyRequests.Load())
 	assert.Zero(t, directRequests.Load())
 }
@@ -62,10 +61,23 @@ func TestVerifyProxyGeoIdentityDoesNotFallBackToDirect(t *testing.T) {
 		context.Background(),
 		unavailableProxyURL,
 		directTarget.URL,
-		browseragentapi.CodexOAuthFingerprint{Locale: "en-US", Timezone: "America/Los_Angeles"},
 	)
 	require.Error(t, err)
 	assert.Zero(t, directRequests.Load())
+}
+
+func TestDeriveProxyGeoLanguagesRegionalizesBareLanguage(t *testing.T) {
+	locale, languages, err := deriveProxyGeoLanguages("JP", []language.Tag{language.Japanese})
+
+	require.NoError(t, err)
+	assert.Equal(t, "ja-JP", locale)
+	assert.Equal(t, []string{"ja-JP", "ja"}, languages)
+}
+
+func TestDeriveProxyGeoLanguagesRejectsDifferentRegion(t *testing.T) {
+	_, _, err := deriveProxyGeoLanguages("US", []language.Tag{language.MustParse("en-GB")})
+
+	assert.ErrorContains(t, err, "country_code")
 }
 
 func TestVerifyProxyGeoIdentityFailsClosed(t *testing.T) {
@@ -73,64 +85,36 @@ func TestVerifyProxyGeoIdentityFailsClosed(t *testing.T) {
 		name       string
 		statusCode int
 		body       string
-		locale     string
-		timezone   string
 		errorText  string
 	}{
-		{
-			name:       "timezone mismatch",
-			statusCode: http.StatusOK,
-			body:       `{"ip":"8.8.8.8","country_code":"US","timezone":"America/New_York","languages":"en-US"}`,
-			locale:     "en-US",
-			timezone:   "America/Los_Angeles",
-			errorText:  "timezone",
-		},
-		{
-			name:       "locale mismatch",
-			statusCode: http.StatusOK,
-			body:       `{"ip":"8.8.8.8","country_code":"US","timezone":"America/Los_Angeles","languages":"es-US"}`,
-			locale:     "en-US",
-			timezone:   "America/Los_Angeles",
-			errorText:  "locale",
-		},
 		{
 			name:       "private IP",
 			statusCode: http.StatusOK,
 			body:       `{"ip":"10.0.0.1","country_code":"US","timezone":"America/Los_Angeles","languages":"en-US"}`,
-			locale:     "en-US",
-			timezone:   "America/Los_Angeles",
 			errorText:  "public",
 		},
 		{
 			name:       "invalid timezone",
 			statusCode: http.StatusOK,
 			body:       `{"ip":"8.8.8.8","country_code":"US","timezone":"Mars/Olympus","languages":"en-US"}`,
-			locale:     "en-US",
-			timezone:   "Mars/Olympus",
 			errorText:  "timezone",
 		},
 		{
 			name:       "missing languages",
 			statusCode: http.StatusOK,
 			body:       `{"ip":"8.8.8.8","country_code":"US","timezone":"America/Los_Angeles","languages":""}`,
-			locale:     "en-US",
-			timezone:   "America/Los_Angeles",
 			errorText:  "languages",
 		},
 		{
 			name:       "service error",
 			statusCode: http.StatusServiceUnavailable,
 			body:       `{"error":true}`,
-			locale:     "en-US",
-			timezone:   "America/Los_Angeles",
 			errorText:  "HTTP 503",
 		},
 		{
 			name:       "invalid JSON",
 			statusCode: http.StatusOK,
 			body:       `{`,
-			locale:     "en-US",
-			timezone:   "America/Los_Angeles",
 			errorText:  "decode",
 		},
 	}
@@ -147,7 +131,6 @@ func TestVerifyProxyGeoIdentityFailsClosed(t *testing.T) {
 				context.Background(),
 				proxyServer.URL,
 				"http://127.0.0.1:1/geo",
-				browseragentapi.CodexOAuthFingerprint{Locale: test.locale, Timezone: test.timezone},
 			)
 			require.Error(t, err)
 			assert.ErrorContains(t, err, test.errorText)

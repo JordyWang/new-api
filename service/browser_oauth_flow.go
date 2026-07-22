@@ -71,6 +71,9 @@ func StartCodexBrowserOAuthFlow(userId int, channelId int, profileId int) (*Code
 	if !browserAgentHasCapability(agent.Metadata, browseragentapi.CapabilityStrictProxyGeoV1) {
 		return nil, errors.New("browser agent does not enforce strict proxy geography; upgrade and restart the agent")
 	}
+	if !browserAgentHasCapability(agent.Metadata, browseragentapi.CapabilityProxyGeoOverlayV1) {
+		return nil, errors.New("browser agent does not derive locale and timezone from proxy GeoIP; upgrade and restart the agent")
+	}
 	now := time.Now().Unix()
 	if agent.LastSeenAt < now-int64(browserAgentOnlineWindow/time.Second) {
 		return nil, errors.New("browser agent is offline")
@@ -197,6 +200,11 @@ func ClaimCodexBrowserOAuthFlow(agentId int, instanceId string) (*CodexBrowserOA
 		_ = model.FailCodexOAuthFlow(agentId, instanceId, flow.Id, err.Error(), now)
 		return nil, err
 	}
+	if !browserAgentHasCapability(agent.Metadata, browseragentapi.CapabilityProxyGeoOverlayV1) {
+		err := errors.New("browser agent does not derive locale and timezone from proxy GeoIP")
+		_ = model.FailCodexOAuthFlow(agentId, instanceId, flow.Id, err.Error(), now)
+		return nil, err
+	}
 	claim, err := buildCodexBrowserOAuthClaim(flow)
 	if err != nil {
 		_ = model.FailCodexOAuthFlow(agentId, instanceId, flow.Id, "failed to load managed browser configuration", now)
@@ -252,8 +260,6 @@ func buildCodexBrowserOAuthClaim(flow *model.CodexOAuthFlow) (*CodexBrowserOAuth
 			Id:          fingerprint.Id,
 			Name:        fingerprint.Name,
 			UserAgent:   fingerprint.UserAgent,
-			Locale:      fingerprint.Locale,
-			Timezone:    fingerprint.Timezone,
 			ViewportW:   fingerprint.ViewportW,
 			ViewportH:   fingerprint.ViewportH,
 			Payload:     fingerprint.Payload,

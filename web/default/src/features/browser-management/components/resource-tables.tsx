@@ -295,12 +295,7 @@ export function FingerprintsTable(props: FingerprintsTableProps) {
       id: 'name',
       header: t('Fingerprint'),
       cell: (fingerprint) => (
-        <div className='flex min-w-40 flex-col gap-1'>
-          <span className='font-medium'>{fingerprint.name}</span>
-          <span className='text-muted-foreground text-xs'>
-            {fingerprint.locale} · {fingerprint.timezone}
-          </span>
-        </div>
+        <span className='font-medium'>{fingerprint.name}</span>
       ),
     },
     {

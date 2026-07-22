@@ -9,7 +9,8 @@ const (
 	FlowStatusCanceled  = "canceled"
 	FlowStatusExpired   = "expired"
 
-	CapabilityStrictProxyGeoV1 = "strict_proxy_geo_v1"
+	CapabilityStrictProxyGeoV1  = "strict_proxy_geo_v1"
+	CapabilityProxyGeoOverlayV1 = "proxy_geo_overlay_v1"
 )
 
 type CodexOAuthClaim struct {
@@ -40,8 +41,6 @@ type CodexOAuthFingerprint struct {
 	Id          int    `json:"id"`
 	Name        string `json:"name"`
 	UserAgent   string `json:"user_agent"`
-	Locale      string `json:"locale"`
-	Timezone    string `json:"timezone"`
 	ViewportW   int    `json:"viewport_width"`
 	ViewportH   int    `json:"viewport_height"`
 	Payload     string `json:"payload"`

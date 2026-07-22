@@ -77,8 +77,6 @@ type BrowserFingerprint struct {
 	Id          int    `json:"id" gorm:"primaryKey"`
 	Name        string `json:"name" gorm:"type:varchar(128);not null"`
 	UserAgent   string `json:"user_agent" gorm:"type:text"`
-	Locale      string `json:"locale" gorm:"type:varchar(64)"`
-	Timezone    string `json:"timezone" gorm:"type:varchar(128)"`
 	ViewportW   int    `json:"viewport_width"`
 	ViewportH   int    `json:"viewport_height"`
 	Payload     string `json:"payload" gorm:"type:text"`
@@ -259,8 +257,6 @@ func UpdateBrowserFingerprint(fingerprint *BrowserFingerprint) error {
 	return DB.Model(&BrowserFingerprint{}).Where("id = ?", fingerprint.Id).Updates(map[string]any{
 		"name":        fingerprint.Name,
 		"user_agent":  fingerprint.UserAgent,
-		"locale":      fingerprint.Locale,
-		"timezone":    fingerprint.Timezone,
 		"viewport_w":  fingerprint.ViewportW,
 		"viewport_h":  fingerprint.ViewportH,
 		"payload":     fingerprint.Payload,

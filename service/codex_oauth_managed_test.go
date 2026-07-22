@@ -80,13 +80,17 @@ func TestCodexBrowserOAuthFlowViewSeparatesFlowAndCredentialExpiry(t *testing.T)
 	assert.NotEqual(t, view.ExpiresAt, view.CredentialExpiresAt)
 }
 
-func TestBrowserAgentStrictProxyGeoCapability(t *testing.T) {
+func TestBrowserAgentProxyGeoCapabilities(t *testing.T) {
 	metadata, err := common.Marshal(map[string]any{
-		"capabilities": []string{browseragentapi.CapabilityStrictProxyGeoV1},
+		"capabilities": []string{
+			browseragentapi.CapabilityStrictProxyGeoV1,
+			browseragentapi.CapabilityProxyGeoOverlayV1,
+		},
 	})
 	require.NoError(t, err)
 
 	assert.True(t, browserAgentHasCapability(string(metadata), browseragentapi.CapabilityStrictProxyGeoV1))
+	assert.True(t, browserAgentHasCapability(string(metadata), browseragentapi.CapabilityProxyGeoOverlayV1))
 	assert.False(t, browserAgentHasCapability(`{"capabilities":[]}`, browseragentapi.CapabilityStrictProxyGeoV1))
 	assert.False(t, browserAgentHasCapability(`not-json`, browseragentapi.CapabilityStrictProxyGeoV1))
 }

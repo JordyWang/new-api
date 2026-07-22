@@ -17,7 +17,6 @@ import (
 	"github.com/QuantumNous/new-api/service"
 
 	"github.com/gin-gonic/gin"
-	"golang.org/x/text/language"
 )
 
 var browserRuntimeKeyPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
@@ -62,8 +61,6 @@ type browserProxyRequest struct {
 type browserFingerprintRequest struct {
 	Name        string `json:"name"`
 	UserAgent   string `json:"user_agent"`
-	Locale      string `json:"locale"`
-	Timezone    string `json:"timezone"`
 	ViewportW   int    `json:"viewport_width"`
 	ViewportH   int    `json:"viewport_height"`
 	Payload     string `json:"payload"`
@@ -870,28 +867,6 @@ func normalizeBrowserFingerprintRequest(request browserFingerprintRequest, exist
 	if name == "" || len(name) > 128 {
 		return nil, errors.New("browser fingerprint name is required and must not exceed 128 characters")
 	}
-	locale := strings.TrimSpace(request.Locale)
-	if locale == "" {
-		locale = "en-US"
-	}
-	if len(locale) > 64 || strings.ContainsRune(locale, '\x00') {
-		return nil, errors.New("browser locale is invalid")
-	}
-	localeTag, err := language.Parse(locale)
-	if err != nil {
-		return nil, errors.New("browser locale must be a valid BCP 47 language tag")
-	}
-	locale = localeTag.String()
-	timezone := strings.TrimSpace(request.Timezone)
-	if timezone == "" {
-		timezone = "UTC"
-	}
-	if len(timezone) > 128 || strings.ContainsRune(timezone, '\x00') {
-		return nil, errors.New("browser timezone is invalid")
-	}
-	if _, err := time.LoadLocation(timezone); err != nil {
-		return nil, errors.New("browser timezone must be a valid IANA timezone")
-	}
 	userAgent := strings.TrimSpace(request.UserAgent)
 	if len(userAgent) > 4096 || strings.ContainsRune(userAgent, '\x00') {
 		return nil, errors.New("browser user agent is invalid")
@@ -908,7 +883,7 @@ func normalizeBrowserFingerprintRequest(request browserFingerprintRequest, exist
 		return nil, errors.New("browser viewport is outside the supported range")
 	}
 
-	payload, err := normalizeJSONObject(request.Payload, "fingerprint payload")
+	payload, err := normalizeCoreFingerprintPayload(request.Payload)
 	if err != nil {
 		return nil, err
 	}
@@ -931,8 +906,6 @@ func normalizeBrowserFingerprintRequest(request browserFingerprintRequest, exist
 	return &model.BrowserFingerprint{
 		Name:        name,
 		UserAgent:   userAgent,
-		Locale:      locale,
-		Timezone:    timezone,
 		ViewportW:   viewportW,
 		ViewportH:   viewportH,
 		Payload:     payload,
@@ -940,6 +913,39 @@ func normalizeBrowserFingerprintRequest(request browserFingerprintRequest, exist
 		Environment: environment,
 		Enabled:     enabled,
 	}, nil
+}
+
+func normalizeCoreFingerprintPayload(raw string) (string, error) {
+	normalized, err := normalizeJSONObject(raw, "fingerprint payload")
+	if err != nil {
+		return "", err
+	}
+	var payload map[string]any
+	if err := common.UnmarshalJsonStr(normalized, &payload); err != nil {
+		return "", err
+	}
+	for _, key := range []string{"accept_language", "accept_languages", "country_code", "geo_overlay", "languages", "locale", "timezone", "timezone_id"} {
+		delete(payload, key)
+	}
+	fingerprintValue, hasFingerprint := payload["fingerprint"]
+	if hasFingerprint {
+		fingerprint, ok := fingerprintValue.(map[string]any)
+		if !ok {
+			return "", errors.New("fingerprint payload fingerprint field must be a JSON object")
+		}
+		for _, key := range []string{"accept_language", "accept_languages", "country_code", "geo_overlay", "languages", "locale", "timezone", "timezone_id"} {
+			delete(fingerprint, key)
+		}
+		if navigator, ok := fingerprint["navigator"].(map[string]any); ok {
+			delete(navigator, "language")
+			delete(navigator, "languages")
+		}
+	}
+	encoded, err := common.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
 }
 
 func normalizeBrowserProfileRequest(request browserProfileRequest, existing *model.BrowserProfile) (*model.BrowserProfile, error) {

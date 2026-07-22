@@ -48,8 +48,6 @@ export type BrowserFingerprint = {
   id: number
   name: string
   user_agent: string
-  locale: string
-  timezone: string
   viewport_width: number
   viewport_height: number
   payload: string
@@ -92,8 +90,6 @@ export type BrowserProxyInput = {
 export type BrowserFingerprintInput = {
   name: string
   user_agent: string
-  locale: string
-  timezone: string
   viewport_width: number
   viewport_height: number
   payload: string
