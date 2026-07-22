@@ -83,6 +83,7 @@ export interface ChannelSettings {
   force_format?: boolean
   thinking_to_content?: boolean
   proxy?: string
+  browser_proxy_id?: number
   pass_through_body_enabled?: boolean
   system_prompt?: string
   system_prompt_override?: boolean
@@ -373,5 +374,75 @@ export interface AddChannelRequest {
   mode: 'single' | 'batch' | 'multi_to_single'
   multi_key_mode?: 'random' | 'polling'
   batch_add_set_key_prefix_2_name?: boolean
+  codex_oauth_flow_id?: string
   channel: Partial<Channel>
+}
+
+export type BrowserOAuthProfile = {
+  id: number
+  name: string
+  agent_id: number
+  proxy_id: number
+  fingerprint_id: number
+  runtime_key: string
+  persistent: boolean
+  enabled: boolean
+  agent_name: string
+  agent_online: boolean
+  agent_runtimes: string[]
+  proxy_name: string
+  proxy_max_channel_accounts: number
+  proxy_channel_account_count: number
+  proxy_profile_count: number
+  proxy_at_capacity: boolean
+  fingerprint_name: string
+}
+
+export type ManagedProxy = {
+  id: number
+  name: string
+  scheme: 'http' | 'https' | 'socks5' | 'socks5h'
+  url_masked: string
+  has_credentials: boolean
+  enabled: boolean
+  max_channel_accounts: number
+  channel_account_count: number
+  profile_count: number
+}
+
+export type BrowserRuntimeOption = {
+  agent_id: number
+  agent_name: string
+  runtime_key: string
+  profile_count: number
+}
+
+export type CodexBrowserOAuthFlowStatus =
+  | 'pending'
+  | 'claimed'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'canceled'
+  | 'expired'
+
+export type CodexBrowserOAuthFlow = {
+  id: string
+  status: CodexBrowserOAuthFlowStatus
+  channel_id: number
+  profile_id: number
+  profile_name: string
+  agent_id: number
+  agent_name: string
+  agent_online: boolean
+  proxy_id: number
+  account_id: string
+  email: string
+  plan_type: string
+  credential_expires_at: number
+  expires_at: number
+  created_at: number
+  completed_at: number
+  bound: boolean
+  error_message: string
 }

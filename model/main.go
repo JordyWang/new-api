@@ -300,8 +300,17 @@ func migrateDB() error {
 		&SystemTaskLock{},
 		&CasbinRule{},
 		&AuthzRole{},
+		&BrowserAgent{},
+		&BrowserProxy{},
+		&BrowserFingerprint{},
+		&BrowserProfile{},
+		&BrowserLaunch{},
+		&CodexOAuthFlow{},
 	)
 	if err != nil {
+		return err
+	}
+	if err := normalizeBrowserProxyChannelLimits(); err != nil {
 		return err
 	}
 	if err := migrateRegistrationInviteCodes(); err != nil {
@@ -370,6 +379,12 @@ func migrateDBFast() error {
 		{&SystemInstance{}, "SystemInstance"},
 		{&SystemTask{}, "SystemTask"},
 		{&SystemTaskLock{}, "SystemTaskLock"},
+		{&BrowserAgent{}, "BrowserAgent"},
+		{&BrowserProxy{}, "BrowserProxy"},
+		{&BrowserFingerprint{}, "BrowserFingerprint"},
+		{&BrowserProfile{}, "BrowserProfile"},
+		{&BrowserLaunch{}, "BrowserLaunch"},
+		{&CodexOAuthFlow{}, "CodexOAuthFlow"},
 	}
 	// 动态计算migration数量，确保errChan缓冲区足够大
 	errChan := make(chan error, len(migrations))
@@ -393,6 +408,9 @@ func migrateDBFast() error {
 		if err != nil {
 			return err
 		}
+	}
+	if err := normalizeBrowserProxyChannelLimits(); err != nil {
+		return err
 	}
 	if common.UsingMainDatabase(common.DatabaseTypeSQLite) {
 		if err := ensureSubscriptionPlanTableSQLite(); err != nil {

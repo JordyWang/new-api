@@ -132,6 +132,7 @@ import {
   getChannel,
   getChannelKey,
   getGroups,
+  getManagedProxies,
   getPrefillGroups,
   refreshCodexCredential,
 } from '../../api'
@@ -170,8 +171,9 @@ import {
   collectInvalidStatusCodeEntries,
   collectNewDisallowedStatusCodeRedirects,
 } from '../../lib/status-code-risk-guard'
-import type { Channel } from '../../types'
+import type { Channel, CodexBrowserOAuthFlow } from '../../types'
 import { useChannels } from '../channels-provider'
+import { CodexBrowserOAuthCard } from '../codex-browser-oauth-card'
 import { AdvancedCustomEditorDialog } from '../dialogs/advanced-custom-editor-dialog'
 import { FetchModelsDialog } from '../dialogs/fetch-models-dialog'
 import {
@@ -268,6 +270,7 @@ const SENSITIVE_FORM_FIELDS = [
   'type',
   'base_url',
   'key',
+  'codex_oauth_flow_id',
   'openai_organization',
   'other',
   'key_mode',
@@ -283,6 +286,7 @@ const SENSITIVE_FORM_FIELDS = [
   'force_format',
   'thinking_to_content',
   'proxy',
+  'browser_proxy_id',
   'pass_through_body_enabled',
   'system_prompt',
   'system_prompt_override',
@@ -333,6 +337,7 @@ function hasAdvancedSettingsValues(values: ChannelFormValues): boolean {
     values.priority ||
     values.weight ||
     values.proxy?.trim() ||
+    values.browser_proxy_id ||
     values.system_prompt?.trim() ||
     values.force_format ||
     values.thinking_to_content ||
@@ -676,6 +681,29 @@ export function ChannelMutateDrawer({
     queryFn: () => getPrefillGroups('model'),
   })
 
+  const managedProxiesQuery = useQuery({
+    queryKey: ['managed-proxies', 'channel-options'],
+    queryFn: async () => {
+      const response = await getManagedProxies()
+      if (!response.success || !response.data) {
+        throw new Error(response.message || t('Failed to load managed proxies'))
+      }
+      return response.data
+    },
+    enabled: open && canEditSensitive,
+    staleTime: 15_000,
+  })
+  const originalBrowserProxyId = useMemo(() => {
+    const rawSetting = channelData?.data?.setting
+    if (!rawSetting) return 0
+    try {
+      const parsed = JSON.parse(rawSetting) as { browser_proxy_id?: unknown }
+      return Number(parsed.browser_proxy_id) || 0
+    } catch {
+      return 0
+    }
+  }, [channelData?.data?.setting])
+
   const { copyToClipboard } = useCopyToClipboard()
 
   const {
@@ -717,6 +745,7 @@ export function ChannelMutateDrawer({
   const currentStatus = form.watch('status')
   const currentBaseUrl = form.watch('base_url')
   const currentKey = form.watch('key')
+  const currentCodexOAuthFlowId = form.watch('codex_oauth_flow_id')
   const currentOther = form.watch('other')
   const currentModels = form.watch('models')
   const currentName = form.watch('name')
@@ -744,6 +773,7 @@ export function ChannelMutateDrawer({
     'disable_task_polling_sleep'
   )
   const currentProxy = form.watch('proxy')
+  const currentBrowserProxyId = form.watch('browser_proxy_id')
   const currentSystemPrompt = form.watch('system_prompt')
   const currentSystemPromptOverride = form.watch('system_prompt_override')
   const currentAllowServiceTier = form.watch('allow_service_tier')
@@ -941,6 +971,7 @@ export function ChannelMutateDrawer({
   )
   const credentialsHaveErrors = Boolean(
     formErrors.key ||
+    formErrors.codex_oauth_flow_id ||
     formErrors.base_url ||
     formErrors.other ||
     formErrors.multi_key_mode ||
@@ -959,7 +990,7 @@ export function ChannelMutateDrawer({
   const providerRequiresOther = [3, 18, 21, 39, 41, 49].includes(currentType)
   const identityComplete = Boolean(currentName?.trim() && currentType > 0)
   const credentialsComplete = Boolean(
-    (isEditing || currentKey?.trim()) &&
+    (isEditing || currentKey?.trim() || currentCodexOAuthFlowId?.trim()) &&
     (!providerRequiresBaseUrl || currentBaseUrl?.trim()) &&
     (!providerRequiresOther || currentOther?.trim())
   )
@@ -1009,6 +1040,7 @@ export function ChannelMutateDrawer({
     currentPassThroughBodyEnabled ||
     currentDisableTaskPollingSleep ||
     currentProxy?.trim() ||
+    currentBrowserProxyId ||
     currentSystemPrompt?.trim() ||
     currentSystemPromptOverride
   )
@@ -1293,6 +1325,13 @@ export function ChannelMutateDrawer({
     }
   }, [form, isEditing, multiKeyMode, supportsMultiKeyAddMode])
 
+  useEffect(() => {
+    if (currentType === 57) return
+    if (form.getValues('codex_oauth_flow_id')) {
+      form.setValue('codex_oauth_flow_id', '', { shouldValidate: true })
+    }
+  }, [currentType, form])
+
   // Validate base_url - warn if it ends with /v1
   useEffect(() => {
     if (!currentBaseUrl || !currentBaseUrl.endsWith('/v1')) return
@@ -1394,6 +1433,49 @@ export function ChannelMutateDrawer({
       setIsCodexCredentialRefreshing(false)
     }
   }, [channelId, queryClient, t])
+
+  const handleCodexOAuthCompleted = useCallback(
+    (flow: CodexBrowserOAuthFlow) => {
+      form.setValue('browser_proxy_id', flow.proxy_id, {
+        shouldDirty: !isEditing,
+      })
+      form.setValue('proxy', '', { shouldDirty: !isEditing })
+      form.setValue('key', '', { shouldDirty: true, shouldValidate: true })
+      if (isEditing && channelId) {
+        void queryClient.invalidateQueries({
+          queryKey: channelsQueryKeys.detail(channelId),
+        })
+        void queryClient.invalidateQueries({
+          queryKey: channelsQueryKeys.lists(),
+        })
+        return
+      }
+      form.setValue('multi_key_mode', 'single', { shouldDirty: true })
+      form.setValue('codex_oauth_flow_id', flow.id, {
+        shouldDirty: true,
+        shouldValidate: true,
+      })
+    },
+    [channelId, form, isEditing, queryClient]
+  )
+
+  const handleCodexOAuthReset = useCallback(() => {
+    form.setValue('codex_oauth_flow_id', '', {
+      shouldDirty: true,
+      shouldValidate: true,
+    })
+    if (!isEditing) {
+      form.setValue('browser_proxy_id', 0, { shouldDirty: true })
+    }
+  }, [form, isEditing])
+
+  const handleCodexOAuthProxyChange = useCallback(
+    (proxyId: number) => {
+      form.setValue('browser_proxy_id', proxyId, { shouldDirty: true })
+      form.setValue('proxy', '', { shouldDirty: true })
+    },
+    [form]
+  )
 
   // Unified function to update models
   const updateModels = useCallback(
@@ -1596,7 +1678,11 @@ export function ChannelMutateDrawer({
   const onSubmit = useCallback(
     async (data: ChannelFormValues) => {
       // Validate key is required when creating
-      if (!isEditing && !data.key?.trim()) {
+      if (
+        !isEditing &&
+        !data.key?.trim() &&
+        !(data.type === 57 && data.codex_oauth_flow_id?.trim())
+      ) {
         form.setError('key', {
           type: 'manual',
           message: ERROR_MESSAGES.REQUIRED_KEY,
@@ -2884,6 +2970,23 @@ export function ChannelMutateDrawer({
                                 />
                               )}
 
+                              {currentType === 57 && (
+                                <CodexBrowserOAuthCard
+                                  open={open}
+                                  channelId={channelId}
+                                  isEditing={isEditing}
+                                  disabled={sensitiveLocked}
+                                  flowId={currentCodexOAuthFlowId || ''}
+                                  channelName={currentName}
+                                  managedProxyId={currentBrowserProxyId ?? 0}
+                                  onManagedProxyChange={
+                                    handleCodexOAuthProxyChange
+                                  }
+                                  onCompleted={handleCodexOAuthCompleted}
+                                  onFlowReset={handleCodexOAuthReset}
+                                />
+                              )}
+
                               <FormField
                                 control={form.control}
                                 name='key'
@@ -2958,17 +3061,31 @@ export function ChannelMutateDrawer({
                                   }
                                   return (
                                     <FormItem>
-                                      <FormLabel>{t('API Key *')}</FormLabel>
+                                      <FormLabel>
+                                        {currentType === 57
+                                          ? t('Manual credential JSON')
+                                          : t('API Key *')}
+                                      </FormLabel>
                                       <FormControl>
                                         <Textarea
                                           placeholder={keyPlaceholder}
-                                          rows={isBatchMode ? 8 : 4}
+                                          rows={
+                                            isBatchMode || currentType === 57
+                                              ? 8
+                                              : 4
+                                          }
                                           {...field}
                                         />
                                       </FormControl>
                                       <FormDescription>
                                         <div className='flex flex-col gap-2'>
-                                          <span>{keyDescription}</span>
+                                          <span>
+                                            {currentType === 57
+                                              ? t(
+                                                  'Compatibility fallback: paste a Codex OAuth credential JSON only when managed browser login is unavailable.'
+                                                )
+                                              : keyDescription}
+                                          </span>
                                           {isBatchMode && (
                                             <Button
                                               type='button'
@@ -4160,26 +4277,121 @@ export function ChannelMutateDrawer({
 
                             <FormField
                               control={form.control}
-                              name='proxy'
-                              render={({ field }) => (
-                                <FormItem>
-                                  <FormLabel>{t('Proxy Address')}</FormLabel>
-                                  <FormControl>
-                                    <Input
-                                      placeholder={t(
-                                        'socks5://user:pass@host:port'
-                                      )}
-                                      {...field}
-                                    />
-                                  </FormControl>
-                                  <FormDescription>
-                                    {t(
-                                      'Network proxy for this channel (supports socks5 protocol)'
+                              name='browser_proxy_id'
+                              render={({ field }) => {
+                                const legacyProxyConfigured = Boolean(
+                                  currentProxy?.trim() && !field.value
+                                )
+                                const proxyItems = [
+                                  {
+                                    value: '0',
+                                    label: t('No proxy'),
+                                    disabled: false,
+                                  },
+                                  ...(legacyProxyConfigured
+                                    ? [
+                                        {
+                                          value: 'legacy',
+                                          label: t(
+                                            'Legacy inline proxy (migration required)'
+                                          ),
+                                          disabled: false,
+                                        },
+                                      ]
+                                    : []),
+                                  ...(managedProxiesQuery.data ?? []).map(
+                                    (proxy) => {
+                                      const atCapacity =
+                                        proxy.max_channel_accounts > 0 &&
+                                        proxy.channel_account_count >=
+                                          proxy.max_channel_accounts &&
+                                        proxy.id !== originalBrowserProxyId
+                                      const capacity =
+                                        proxy.max_channel_accounts > 0
+                                          ? `${proxy.channel_account_count}/${proxy.max_channel_accounts}`
+                                          : `${proxy.channel_account_count}/${t('Unlimited')}`
+                                      let status = `${t('Channel accounts')}: ${capacity}`
+                                      if (!proxy.enabled) {
+                                        status = t('Disabled')
+                                      } else if (atCapacity) {
+                                        status = t('At capacity')
+                                      }
+                                      return {
+                                        value: String(proxy.id),
+                                        label: `${proxy.name} · ${proxy.url_masked} · ${t('Profiles')}: ${proxy.profile_count} · ${status}`,
+                                        disabled: !proxy.enabled || atCapacity,
+                                      }
+                                    }
+                                  ),
+                                ]
+                                let selectedValue = '0'
+                                if (field.value) {
+                                  selectedValue = String(field.value)
+                                } else if (legacyProxyConfigured) {
+                                  selectedValue = 'legacy'
+                                }
+
+                                return (
+                                  <FormItem>
+                                    <FormLabel>{t('Managed proxy')}</FormLabel>
+                                    <Select
+                                      items={proxyItems}
+                                      value={selectedValue}
+                                      onValueChange={(value) => {
+                                        if (value === 'legacy') return
+                                        field.onChange(Number(value))
+                                        form.setValue('proxy', '', {
+                                          shouldDirty: true,
+                                        })
+                                      }}
+                                      disabled={managedProxiesQuery.isPending}
+                                    >
+                                      <FormControl>
+                                        <SelectTrigger>
+                                          <SelectValue
+                                            placeholder={t(
+                                              'Select a managed proxy'
+                                            )}
+                                          />
+                                        </SelectTrigger>
+                                      </FormControl>
+                                      <SelectContent
+                                        alignItemWithTrigger={false}
+                                      >
+                                        <SelectGroup>
+                                          {proxyItems.map((item) => (
+                                            <SelectItem
+                                              key={item.value}
+                                              value={item.value}
+                                              disabled={item.disabled}
+                                            >
+                                              {item.label}
+                                            </SelectItem>
+                                          ))}
+                                        </SelectGroup>
+                                      </SelectContent>
+                                    </Select>
+                                    <FormDescription>
+                                      {legacyProxyConfigured
+                                        ? t(
+                                            'This channel still uses a legacy inline proxy. Select a proxy from Proxy Management to migrate it.'
+                                          )
+                                        : t(
+                                            'Channel requests use the selected proxy from Proxy Management.'
+                                          )}
+                                    </FormDescription>
+                                    {managedProxiesQuery.isError && (
+                                      <p className='text-destructive text-sm'>
+                                        {managedProxiesQuery.error instanceof
+                                        Error
+                                          ? managedProxiesQuery.error.message
+                                          : t('Failed to load managed proxies')}
+                                      </p>
                                     )}
-                                  </FormDescription>
-                                  <FormMessage />
-                                </FormItem>
-                              )}
+                                    <FormMessage />
+                                  </FormItem>
+                                )
+                              }}
                             />
 
                             <FormField

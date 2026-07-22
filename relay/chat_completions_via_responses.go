@@ -102,15 +102,24 @@ func chatCompletionsViaResponses(c *gin.Context, info *relaycommon.RelayInfo, ad
 		return nil, types.NewError(fmt.Errorf("expected OpenAI responses request, got %T", result.Value), types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
 	}
 
+	clientStream := info.IsStream
 	savedRelayMode := info.RelayMode
 	savedRequestURLPath := info.RequestURLPath
 	defer func() {
+		info.IsStream = clientStream
 		info.RelayMode = savedRelayMode
 		info.RequestURLPath = savedRequestURLPath
 	}()
 
 	info.RelayMode = relayconstant.RelayModeResponses
 	info.RequestURLPath = "/v1/responses"
+	if info.ChannelType == constant.ChannelTypeCodex {
+		// The Codex backend rejects non-streaming requests and returns SSE without
+		// a Content-Type header. Always request a stream upstream; non-streaming
+		// Chat Completions clients are served by the buffered converter below.
+		responsesReq.Stream = common.GetPointer(true)
+		info.IsStream = true
+	}
 
 	convertedRequest, err := adaptor.ConvertOpenAIResponsesRequest(c, info, *responsesReq)
 	if err != nil {
@@ -149,8 +158,7 @@ func chatCompletionsViaResponses(c *gin.Context, info *relaycommon.RelayInfo, ad
 	statusCodeMappingStr := c.GetString("status_code_mapping")
 
 	httpResp = resp.(*http.Response)
-	clientStream := info.IsStream
-	upstreamStream := isResponsesEventStreamContentType(httpResp.Header.Get("Content-Type"))
+	upstreamStream := info.ChannelType == constant.ChannelTypeCodex || isResponsesEventStreamContentType(httpResp.Header.Get("Content-Type"))
 	info.IsStream = clientStream || upstreamStream
 	if httpResp.StatusCode != http.StatusOK {
 		newApiErr := service.RelayErrorHandler(c.Request.Context(), httpResp, false)

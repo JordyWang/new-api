@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -11,19 +13,66 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/pkg/codexoauth"
 )
 
 const (
-	codexOAuthClientID = "app_EMoamEEZ73f0CkXaXp7hrann"
-	codexOAuthTokenURL = "https://auth.openai.com/oauth/token"
-	codexJWTClaimPath  = "https://api.openai.com/auth"
-	defaultHTTPTimeout = 20 * time.Second
+	codexOAuthClientID     = codexoauth.ClientID
+	codexOAuthAuthorizeURL = "https://auth.openai.com/oauth/authorize"
+	codexOAuthTokenURL     = codexoauth.TokenURL
+	codexOAuthRedirectURI  = codexoauth.RedirectURI
+	codexOAuthScope        = "openid profile email offline_access api.connectors.read api.connectors.invoke"
+	codexJWTClaimPath      = "https://api.openai.com/auth"
+	defaultHTTPTimeout     = 20 * time.Second
 )
 
-type CodexOAuthTokenResult struct {
-	AccessToken  string
-	RefreshToken string
-	ExpiresAt    time.Time
+type CodexOAuthTokenResult = codexoauth.TokenResult
+
+type CodexOAuthAuthorizationFlow struct {
+	State        string
+	Verifier     string
+	Challenge    string
+	AuthorizeURL string
+}
+
+func CreateCodexOAuthAuthorizationFlow() (*CodexOAuthAuthorizationFlow, error) {
+	stateBytes := make([]byte, 16)
+	if _, err := rand.Read(stateBytes); err != nil {
+		return nil, err
+	}
+	verifierBytes := make([]byte, 32)
+	if _, err := rand.Read(verifierBytes); err != nil {
+		return nil, err
+	}
+
+	state := fmt.Sprintf("%x", stateBytes)
+	verifier := base64.RawURLEncoding.EncodeToString(verifierBytes)
+	challengeBytes := sha256.Sum256([]byte(verifier))
+	challenge := base64.RawURLEncoding.EncodeToString(challengeBytes[:])
+
+	u, err := url.Parse(codexOAuthAuthorizeURL)
+	if err != nil {
+		return nil, err
+	}
+	query := u.Query()
+	query.Set("response_type", "code")
+	query.Set("client_id", codexOAuthClientID)
+	query.Set("redirect_uri", codexOAuthRedirectURI)
+	query.Set("scope", codexOAuthScope)
+	query.Set("code_challenge", challenge)
+	query.Set("code_challenge_method", "S256")
+	query.Set("state", state)
+	query.Set("id_token_add_organizations", "true")
+	query.Set("codex_cli_simplified_flow", "true")
+	query.Set("originator", "codex-tui")
+	u.RawQuery = query.Encode()
+
+	return &CodexOAuthAuthorizationFlow{
+		State:        state,
+		Verifier:     verifier,
+		Challenge:    challenge,
+		AuthorizeURL: u.String(),
+	}, nil
 }
 
 func RefreshCodexOAuthToken(ctx context.Context, refreshToken string) (*CodexOAuthTokenResult, error) {
@@ -36,6 +85,14 @@ func RefreshCodexOAuthTokenWithProxy(ctx context.Context, refreshToken string, p
 		return nil, err
 	}
 	return refreshCodexOAuthToken(ctx, client, codexOAuthTokenURL, codexOAuthClientID, refreshToken)
+}
+
+func ExchangeCodexAuthorizationCodeWithProxy(ctx context.Context, code string, verifier string, proxyURL string) (*CodexOAuthTokenResult, error) {
+	client, err := getCodexOAuthHTTPClient(proxyURL)
+	if err != nil {
+		return nil, err
+	}
+	return codexoauth.ExchangeAuthorizationCode(ctx, client, code, verifier)
 }
 
 func refreshCodexOAuthToken(
@@ -69,6 +126,7 @@ func refreshCodexOAuthToken(
 	defer resp.Body.Close()
 
 	var payload struct {
+		IDToken      string `json:"id_token"`
 		AccessToken  string `json:"access_token"`
 		RefreshToken string `json:"refresh_token"`
 		ExpiresIn    int    `json:"expires_in"`
@@ -86,6 +144,7 @@ func refreshCodexOAuthToken(
 	}
 
 	return &CodexOAuthTokenResult{
+		IDToken:      strings.TrimSpace(payload.IDToken),
 		AccessToken:  strings.TrimSpace(payload.AccessToken),
 		RefreshToken: strings.TrimSpace(payload.RefreshToken),
 		ExpiresAt:    time.Now().Add(time.Duration(payload.ExpiresIn) * time.Second),
@@ -151,6 +210,34 @@ func ExtractEmailFromJWT(token string) (string, bool) {
 		return "", false
 	}
 	return s, true
+}
+
+func ExtractCodexPlanTypeFromJWT(token string) (string, bool) {
+	claims, ok := decodeJWTClaims(token)
+	if !ok {
+		return "", false
+	}
+	raw, ok := claims[codexJWTClaimPath]
+	if !ok {
+		return "", false
+	}
+	obj, ok := raw.(map[string]any)
+	if !ok {
+		return "", false
+	}
+	value, ok := obj["chatgpt_plan_type"]
+	if !ok {
+		return "", false
+	}
+	planType, ok := value.(string)
+	if !ok {
+		return "", false
+	}
+	planType = strings.TrimSpace(planType)
+	if planType == "" {
+		return "", false
+	}
+	return planType, true
 }
 
 func decodeJWTClaims(token string) (map[string]any, bool) {

@@ -21,11 +21,13 @@ type CodexOAuthKey struct {
 	AccessToken  string `json:"access_token,omitempty"`
 	RefreshToken string `json:"refresh_token,omitempty"`
 
-	AccountID   string `json:"account_id,omitempty"`
-	LastRefresh string `json:"last_refresh,omitempty"`
-	Email       string `json:"email,omitempty"`
-	Type        string `json:"type,omitempty"`
-	Expired     string `json:"expired,omitempty"`
+	AccountID      string `json:"account_id,omitempty"`
+	LastRefresh    string `json:"last_refresh,omitempty"`
+	Email          string `json:"email,omitempty"`
+	PlanType       string `json:"plan_type,omitempty"`
+	Type           string `json:"type,omitempty"`
+	Expired        string `json:"expired,omitempty"`
+	ManagedProxyID int    `json:"managed_proxy_id,omitempty"`
 }
 
 func parseCodexOAuthKey(raw string) (*CodexOAuthKey, error) {
@@ -62,13 +64,20 @@ func RefreshCodexChannelCredential(ctx context.Context, channelID int, opts Code
 	refreshCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	res, err := RefreshCodexOAuthTokenWithProxy(refreshCtx, oauthKey.RefreshToken, ch.GetSetting().Proxy)
+	proxyURL, err := ResolveChannelProxyURL(ch)
+	if err != nil {
+		return nil, nil, err
+	}
+	res, err := RefreshCodexOAuthTokenWithProxy(refreshCtx, oauthKey.RefreshToken, proxyURL)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	oauthKey.AccessToken = res.AccessToken
 	oauthKey.RefreshToken = res.RefreshToken
+	if strings.TrimSpace(res.IDToken) != "" {
+		oauthKey.IDToken = res.IDToken
+	}
 	oauthKey.LastRefresh = time.Now().Format(time.RFC3339)
 	oauthKey.Expired = res.ExpiresAt.Format(time.RFC3339)
 	if strings.TrimSpace(oauthKey.Type) == "" {
@@ -81,8 +90,17 @@ func RefreshCodexChannelCredential(ctx context.Context, channelID int, opts Code
 		}
 	}
 	if strings.TrimSpace(oauthKey.Email) == "" {
-		if email, ok := ExtractEmailFromJWT(oauthKey.AccessToken); ok {
+		emailToken := oauthKey.IDToken
+		if strings.TrimSpace(emailToken) == "" {
+			emailToken = oauthKey.AccessToken
+		}
+		if email, ok := ExtractEmailFromJWT(emailToken); ok {
 			oauthKey.Email = email
+		}
+	}
+	if strings.TrimSpace(oauthKey.PlanType) == "" {
+		if planType, ok := ExtractCodexPlanTypeFromJWT(oauthKey.AccessToken); ok {
+			oauthKey.PlanType = planType
 		}
 	}
 

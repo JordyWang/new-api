@@ -23,16 +23,20 @@ import type {
   AddChannelRequest,
   BatchDeleteParams,
   BatchSetTagParams,
+  BrowserOAuthProfile,
+  BrowserRuntimeOption,
   Channel,
   ChannelBalanceResponse,
   ChannelOpsResponse,
   ChannelTestResponse,
   CopyChannelParams,
   CopyChannelResponse,
+  CodexBrowserOAuthFlow,
   FetchModelsResponse,
   GetChannelResponse,
   GetChannelsParams,
   GetChannelsResponse,
+  ManagedProxy,
   MultiKeyManageParams,
   MultiKeyStatusResponse,
   SearchChannelsParams,
@@ -67,10 +71,93 @@ export type CodexCredentialRefreshResponse = {
     last_refresh?: string
     account_id?: string
     email?: string
+    plan_type?: string
     channel_id?: number
     channel_type?: number
     channel_name?: string
   }
+}
+
+type BrowserOAuthResponse<T = undefined> = {
+  success: boolean
+  message?: string
+  data?: T
+}
+
+export async function getManagedProxies(): Promise<
+  BrowserOAuthResponse<ManagedProxy[]>
+> {
+  const res = await api.get<BrowserOAuthResponse<ManagedProxy[]>>(
+    '/api/browser-oauth/proxies',
+    { skipBusinessError: true, skipErrorHandler: true }
+  )
+  return res.data
+}
+
+export async function getBrowserOAuthRuntimes(): Promise<
+  BrowserOAuthResponse<BrowserRuntimeOption[]>
+> {
+  const res = await api.get<BrowserOAuthResponse<BrowserRuntimeOption[]>>(
+    '/api/browser-oauth/runtimes',
+    { skipBusinessError: true, skipErrorHandler: true }
+  )
+  return res.data
+}
+
+export async function getBrowserOAuthProfiles(
+  channelId: number | null
+): Promise<BrowserOAuthResponse<BrowserOAuthProfile[]>> {
+  const res = await api.get<BrowserOAuthResponse<BrowserOAuthProfile[]>>(
+    '/api/browser-oauth/profiles',
+    {
+      params: { channel_id: channelId ?? 0 },
+      skipBusinessError: true,
+      skipErrorHandler: true,
+    }
+  )
+  return res.data
+}
+
+export async function startCodexBrowserOAuth(input: {
+  profile_id: number
+  channel_id: number
+  auto_generate_profile?: boolean
+  profile_name?: string
+  agent_id?: number
+  proxy_id?: number
+  runtime_key?: string
+}): Promise<BrowserOAuthResponse<CodexBrowserOAuthFlow>> {
+  const res = await api.post<BrowserOAuthResponse<CodexBrowserOAuthFlow>>(
+    '/api/browser-oauth/codex',
+    input,
+    channelActionConfig()
+  )
+  return res.data
+}
+
+export async function getCodexBrowserOAuth(
+  flowId: string
+): Promise<BrowserOAuthResponse<CodexBrowserOAuthFlow>> {
+  const res = await api.get<BrowserOAuthResponse<CodexBrowserOAuthFlow>>(
+    `/api/browser-oauth/codex/${encodeURIComponent(flowId)}`,
+    {
+      skipBusinessError: true,
+      skipErrorHandler: true,
+      disableDuplicate: true,
+    }
+  )
+  return res.data
+}
+
+export async function cancelCodexBrowserOAuth(
+  flowId: string
+): Promise<BrowserOAuthResponse> {
+  const res = await api.post<BrowserOAuthResponse>(
+    `/api/browser-oauth/codex/${encodeURIComponent(flowId)}/cancel`,
+    undefined,
+    channelActionConfig()
+  )
+  return res.data
 }
 
 // ============================================================================

@@ -465,9 +465,20 @@ func validateTwoFactorAuth(twoFA *model.TwoFA, code string) bool {
 
 // validateChannel 通用的渠道校验函数
 func validateChannel(channel *model.Channel, isAdd bool) error {
+	if channel == nil {
+		return fmt.Errorf("channel cannot be empty")
+	}
 	// 校验 channel settings
 	if err := channel.ValidateSettings(); err != nil {
 		return fmt.Errorf("渠道额外设置[channel setting] 格式错误：%s", err.Error())
+	}
+	channelSetting := channel.GetSetting()
+	if channelSetting.BrowserProxyId > 0 {
+		if _, err := model.GetBrowserProxyById(channelSetting.BrowserProxyId); err != nil {
+			return fmt.Errorf("managed proxy is invalid: %w", err)
+		}
+		channelSetting.Proxy = ""
+		channel.SetSetting(channelSetting)
 	}
 
 	// 如果是添加操作，检查 channel 和 key 是否为空
@@ -548,6 +559,7 @@ func RefreshCodexChannelCredential(c *gin.Context) {
 			"last_refresh": oauthKey.LastRefresh,
 			"account_id":   oauthKey.AccountID,
 			"email":        oauthKey.Email,
+			"plan_type":    oauthKey.PlanType,
 			"channel_id":   ch.Id,
 			"channel_type": ch.Type,
 			"channel_name": ch.Name,
@@ -559,6 +571,7 @@ type AddChannelRequest struct {
 	Mode                      string                `json:"mode"`
 	MultiKeyMode              constant.MultiKeyMode `json:"multi_key_mode"`
 	BatchAddSetKeyPrefix2Name bool                  `json:"batch_add_set_key_prefix_2_name"`
+	CodexOAuthFlowId          string                `json:"codex_oauth_flow_id"`
 	Channel                   *model.Channel        `json:"channel"`
 }
 
@@ -600,6 +613,26 @@ func AddChannel(c *gin.Context) {
 	if err != nil {
 		common.ApiError(c, err)
 		return
+	}
+	if strings.TrimSpace(addChannelRequest.CodexOAuthFlowId) != "" {
+		if addChannelRequest.Channel == nil || addChannelRequest.Channel.Type != constant.ChannelTypeCodex {
+			common.ApiErrorMsg(c, "Codex OAuth flow can only be used with a Codex channel")
+			return
+		}
+		if addChannelRequest.Mode != "single" {
+			common.ApiErrorMsg(c, "Codex OAuth flow only supports single channel creation")
+			return
+		}
+		credential, proxyId, prepareErr := service.PrepareCompletedCodexBrowserOAuthFlow(c.GetInt("id"), strings.TrimSpace(addChannelRequest.CodexOAuthFlowId))
+		if prepareErr != nil {
+			common.ApiErrorMsg(c, prepareErr.Error())
+			return
+		}
+		addChannelRequest.Channel.Key = credential
+		if applyErr := service.ApplyManagedBrowserProxyToChannel(addChannelRequest.Channel, proxyId); applyErr != nil {
+			common.ApiError(c, applyErr)
+			return
+		}
 	}
 
 	// 使用统一的校验函数
@@ -681,7 +714,11 @@ func AddChannel(c *gin.Context) {
 		}
 		channels = append(channels, *localChannel)
 	}
-	err = model.BatchInsertChannels(channels)
+	if strings.TrimSpace(addChannelRequest.CodexOAuthFlowId) != "" {
+		err = model.InsertChannelsWithCodexOAuthFlow(channels, strings.TrimSpace(addChannelRequest.CodexOAuthFlowId), c.GetInt("id"), time.Now().Unix())
+	} else {
+		err = model.BatchInsertChannels(channels)
+	}
 	if err != nil {
 		common.ApiError(c, err)
 		return
