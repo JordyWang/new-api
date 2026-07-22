@@ -19,9 +19,11 @@ For commercial licensing, please contact support@quantumnous.com
 import {
   Bot,
   Edit,
+  ExternalLink,
   Fingerprint,
   KeyRound,
   RotateCcw,
+  Square,
   Trash2,
   UserRoundCog,
   type LucideIcon,
@@ -75,6 +77,8 @@ type FingerprintsTableProps = {
 
 type ProfilesTableProps = {
   data: BrowserProfile[]
+  onLaunch: (profile: BrowserProfile) => void
+  onStop: (profile: BrowserProfile) => void
   onEdit: (profile: BrowserProfile) => void
   onReset: (profile: BrowserProfile) => void
   onDelete: (profile: BrowserProfile) => void
@@ -239,6 +243,19 @@ export function ProxiesTable(props: ProxiesTableProps) {
         proxy.has_credentials ? t('Credentials stored') : t('No credentials'),
     },
     {
+      id: 'channel_accounts',
+      header: t('Channel accounts'),
+      cell: (proxy) =>
+        proxy.max_channel_accounts > 0
+          ? `${proxy.channel_account_count} / ${proxy.max_channel_accounts}`
+          : `${proxy.channel_account_count} / ${t('Unlimited')}`,
+    },
+    {
+      id: 'profiles',
+      header: t('Profiles'),
+      cell: (proxy) => proxy.profile_count,
+    },
+    {
       id: 'status',
       header: t('Status'),
       cell: (proxy) => <EnabledBadge enabled={proxy.enabled} />,
@@ -375,6 +392,16 @@ export function ProfilesTable(props: ProfilesTableProps) {
       ),
     },
     {
+      id: 'channel',
+      header: t('Codex channel'),
+      cell: (profile) =>
+        profile.channel_id ? (
+          profile.channel_name || `#${profile.channel_id}`
+        ) : (
+          <Badge variant='outline'>{t('Unbound')}</Badge>
+        ),
+    },
+    {
       id: 'agent',
       header: t('Agent'),
       cell: (profile) => (
@@ -409,7 +436,22 @@ export function ProfilesTable(props: ProfilesTableProps) {
     {
       id: 'status',
       header: t('Status'),
-      cell: (profile) => <EnabledBadge enabled={profile.enabled} />,
+      cell: (profile) => {
+        let launchStatus = ''
+        if (profile.active_launch_status === 'pending') {
+          launchStatus = t('Waiting for browser agent')
+        } else if (profile.active_launch_status === 'claimed') {
+          launchStatus = t('Starting browser')
+        } else if (profile.active_launch_status === 'running') {
+          launchStatus = t('Browser running')
+        }
+        return (
+          <div className='flex flex-wrap gap-1.5'>
+            <EnabledBadge enabled={profile.enabled} />
+            {launchStatus && <Badge variant='secondary'>{launchStatus}</Badge>}
+          </div>
+        )
+      },
     },
     {
       id: 'actions',
@@ -418,6 +460,24 @@ export function ProfilesTable(props: ProfilesTableProps) {
       cell: (profile) => (
         <DataTableRowActionMenu ariaLabel={t('Actions')}>
           <DropdownMenuGroup>
+            {profile.active_launch_id ? (
+              <DropdownMenuItem onClick={() => props.onStop(profile)}>
+                <Square />
+                {t('Stop browser')}
+              </DropdownMenuItem>
+            ) : (
+              <DropdownMenuItem
+                onClick={() => props.onLaunch(profile)}
+                disabled={
+                  !profile.channel_id ||
+                  !profile.enabled ||
+                  !profile.agent_online
+                }
+              >
+                <ExternalLink />
+                {t('Open browser')}
+              </DropdownMenuItem>
+            )}
             <DropdownMenuItem onClick={() => props.onEdit(profile)}>
               <Edit />
               {t('Edit')}

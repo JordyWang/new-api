@@ -278,7 +278,11 @@ func fetchChannelUpstreamModelIDs(channel *model.Channel) ([]string, error) {
 			return nil, fmt.Errorf("获取渠道密钥失败: %w", apiErr)
 		}
 		key = strings.TrimSpace(key)
-		models, err := gemini.FetchGeminiModels(baseURL, key, channel.GetSetting().Proxy)
+		proxyURL, err := service.ResolveChannelProxyURL(channel)
+		if err != nil {
+			return nil, fmt.Errorf("解析渠道代理失败: %w", err)
+		}
+		models, err := gemini.FetchGeminiModels(baseURL, key, proxyURL)
 		if err != nil {
 			return nil, err
 		}

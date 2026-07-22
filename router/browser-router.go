@@ -29,15 +29,20 @@ func registerBrowserRoutes(apiRouter *gin.RouterGroup) {
 		managementRoute.DELETE("/fingerprints/:id", controller.DeleteBrowserFingerprint)
 
 		managementRoute.GET("/profiles", controller.ListBrowserProfiles)
+		managementRoute.GET("/profile-channels", controller.ListBrowserProfileChannels)
 		managementRoute.POST("/profiles", controller.CreateBrowserProfile)
 		managementRoute.PUT("/profiles/:id", controller.UpdateBrowserProfile)
+		managementRoute.POST("/profiles/:id/launch", controller.StartBrowserProfileLaunch)
 		managementRoute.POST("/profiles/:id/reset", controller.ResetBrowserProfile)
 		managementRoute.DELETE("/profiles/:id", controller.DeleteBrowserProfile)
+		managementRoute.GET("/launches/:launch_id", controller.GetBrowserProfileLaunch)
+		managementRoute.POST("/launches/:launch_id/cancel", controller.CancelBrowserProfileLaunch)
 	}
 
 	channelOAuthRoute := apiRouter.Group("/browser-oauth")
 	channelOAuthRoute.Use(middleware.AdminAuth(), middleware.RequirePermission(authz.ChannelSensitiveWrite))
 	{
+		channelOAuthRoute.GET("/proxies", controller.ListAvailableBrowserProxies)
 		channelOAuthRoute.GET("/profiles", controller.ListAvailableBrowserProfiles)
 		channelOAuthRoute.POST("/codex", controller.StartCodexBrowserOAuth)
 		channelOAuthRoute.GET("/codex/:flow_id", controller.GetCodexBrowserOAuth)
@@ -53,5 +58,10 @@ func registerBrowserRoutes(apiRouter *gin.RouterGroup) {
 		agentRoute.GET("/codex/:flow_id/status", controller.BrowserAgentGetCodexOAuthStatus)
 		agentRoute.POST("/codex/:flow_id/complete", controller.BrowserAgentCompleteCodexOAuth)
 		agentRoute.POST("/codex/:flow_id/fail", controller.BrowserAgentFailCodexOAuth)
+		agentRoute.POST("/launches/claim", controller.BrowserAgentClaimBrowserLaunch)
+		agentRoute.POST("/launches/:launch_id/running", controller.BrowserAgentMarkBrowserLaunchRunning)
+		agentRoute.GET("/launches/:launch_id/status", controller.BrowserAgentGetBrowserLaunchStatus)
+		agentRoute.POST("/launches/:launch_id/complete", controller.BrowserAgentCompleteBrowserLaunch)
+		agentRoute.POST("/launches/:launch_id/fail", controller.BrowserAgentFailBrowserLaunch)
 	}
 }

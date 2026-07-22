@@ -132,6 +132,7 @@ import {
   getChannel,
   getChannelKey,
   getGroups,
+  getManagedProxies,
   getPrefillGroups,
   refreshCodexCredential,
 } from '../../api'
@@ -679,6 +680,29 @@ export function ChannelMutateDrawer({
     queryKey: ['prefill_groups', 'model'],
     queryFn: () => getPrefillGroups('model'),
   })
+
+  const managedProxiesQuery = useQuery({
+    queryKey: ['managed-proxies', 'channel-options'],
+    queryFn: async () => {
+      const response = await getManagedProxies()
+      if (!response.success || !response.data) {
+        throw new Error(response.message || t('Failed to load managed proxies'))
+      }
+      return response.data
+    },
+    enabled: open && canEditSensitive,
+    staleTime: 15_000,
+  })
+  const originalBrowserProxyId = useMemo(() => {
+    const rawSetting = channelData?.data?.setting
+    if (!rawSetting) return 0
+    try {
+      const parsed = JSON.parse(rawSetting) as { browser_proxy_id?: unknown }
+      return Number(parsed.browser_proxy_id) || 0
+    } catch {
+      return 0
+    }
+  }, [channelData?.data?.setting])
 
   const { copyToClipboard } = useCopyToClipboard()
 
@@ -1305,9 +1329,6 @@ export function ChannelMutateDrawer({
     if (currentType === 57) return
     if (form.getValues('codex_oauth_flow_id')) {
       form.setValue('codex_oauth_flow_id', '', { shouldValidate: true })
-    }
-    if (form.getValues('browser_proxy_id')) {
-      form.setValue('browser_proxy_id', 0, { shouldDirty: true })
     }
   }, [currentType, form])
 
@@ -4243,32 +4264,121 @@ export function ChannelMutateDrawer({
 
                             <FormField
                               control={form.control}
-                              name='proxy'
-                              render={({ field }) => (
-                                <FormItem>
-                                  <FormLabel>{t('Proxy Address')}</FormLabel>
-                                  <FormControl>
-                                    <Input
-                                      placeholder={t(
-                                        'socks5://user:pass@host:port'
-                                      )}
-                                      disabled={Boolean(currentBrowserProxyId)}
-                                      {...field}
-                                    />
-                                  </FormControl>
-                                  <FormDescription>
-                                    {currentBrowserProxyId
-                                      ? t(
-                                          'Managed proxy #{{id}} is enforced for browser login, token requests, and relay traffic.',
-                                          { id: currentBrowserProxyId }
-                                        )
-                                      : t(
-                                          'Network proxy for this channel (supports socks5 protocol)'
-                                        )}
-                                  </FormDescription>
-                                  <FormMessage />
-                                </FormItem>
-                              )}
+                              name='browser_proxy_id'
+                              render={({ field }) => {
+                                const legacyProxyConfigured = Boolean(
+                                  currentProxy?.trim() && !field.value
+                                )
+                                const proxyItems = [
+                                  {
+                                    value: '0',
+                                    label: t('No proxy'),
+                                    disabled: false,
+                                  },
+                                  ...(legacyProxyConfigured
+                                    ? [
+                                        {
+                                          value: 'legacy',
+                                          label: t(
+                                            'Legacy inline proxy (migration required)'
+                                          ),
+                                          disabled: false,
+                                        },
+                                      ]
+                                    : []),
+                                  ...(managedProxiesQuery.data ?? []).map(
+                                    (proxy) => {
+                                      const atCapacity =
+                                        proxy.max_channel_accounts > 0 &&
+                                        proxy.channel_account_count >=
+                                          proxy.max_channel_accounts &&
+                                        proxy.id !== originalBrowserProxyId
+                                      const capacity =
+                                        proxy.max_channel_accounts > 0
+                                          ? `${proxy.channel_account_count}/${proxy.max_channel_accounts}`
+                                          : `${proxy.channel_account_count}/${t('Unlimited')}`
+                                      let status = `${t('Channel accounts')}: ${capacity}`
+                                      if (!proxy.enabled) {
+                                        status = t('Disabled')
+                                      } else if (atCapacity) {
+                                        status = t('At capacity')
+                                      }
+                                      return {
+                                        value: String(proxy.id),
+                                        label: `${proxy.name} · ${proxy.url_masked} · ${t('Profiles')}: ${proxy.profile_count} · ${status}`,
+                                        disabled: !proxy.enabled || atCapacity,
+                                      }
+                                    }
+                                  ),
+                                ]
+                                let selectedValue = '0'
+                                if (field.value) {
+                                  selectedValue = String(field.value)
+                                } else if (legacyProxyConfigured) {
+                                  selectedValue = 'legacy'
+                                }
+
+                                return (
+                                  <FormItem>
+                                    <FormLabel>{t('Managed proxy')}</FormLabel>
+                                    <Select
+                                      items={proxyItems}
+                                      value={selectedValue}
+                                      onValueChange={(value) => {
+                                        if (value === 'legacy') return
+                                        field.onChange(Number(value))
+                                        form.setValue('proxy', '', {
+                                          shouldDirty: true,
+                                        })
+                                      }}
+                                      disabled={managedProxiesQuery.isPending}
+                                    >
+                                      <FormControl>
+                                        <SelectTrigger>
+                                          <SelectValue
+                                            placeholder={t(
+                                              'Select a managed proxy'
+                                            )}
+                                          />
+                                        </SelectTrigger>
+                                      </FormControl>
+                                      <SelectContent
+                                        alignItemWithTrigger={false}
+                                      >
+                                        <SelectGroup>
+                                          {proxyItems.map((item) => (
+                                            <SelectItem
+                                              key={item.value}
+                                              value={item.value}
+                                              disabled={item.disabled}
+                                            >
+                                              {item.label}
+                                            </SelectItem>
+                                          ))}
+                                        </SelectGroup>
+                                      </SelectContent>
+                                    </Select>
+                                    <FormDescription>
+                                      {legacyProxyConfigured
+                                        ? t(
+                                            'This channel still uses a legacy inline proxy. Select a proxy from Proxy Management to migrate it.'
+                                          )
+                                        : t(
+                                            'Channel requests use the selected proxy from Proxy Management.'
+                                          )}
+                                    </FormDescription>
+                                    {managedProxiesQuery.isError && (
+                                      <p className='text-destructive text-sm'>
+                                        {managedProxiesQuery.error instanceof
+                                        Error
+                                          ? managedProxiesQuery.error.message
+                                          : t('Failed to load managed proxies')}
+                                      </p>
+                                    )}
+                                    <FormMessage />
+                                  </FormItem>
+                                )
+                              }}
                             />
 
                             <FormField

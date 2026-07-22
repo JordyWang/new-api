@@ -27,7 +27,9 @@ import type {
   BrowserFingerprint,
   BrowserFingerprintInput,
   BrowserProfile,
+  BrowserProfileChannel,
   BrowserProfileInput,
+  BrowserLaunch,
   BrowserProxy,
   BrowserProxyInput,
 } from './types'
@@ -50,6 +52,8 @@ export const browserManagementQueryKeys = {
   fingerprints: () =>
     [...browserManagementQueryKeys.all, 'fingerprints'] as const,
   profiles: () => [...browserManagementQueryKeys.all, 'profiles'] as const,
+  profileChannels: () =>
+    [...browserManagementQueryKeys.all, 'profile-channels'] as const,
 }
 
 function unwrap<T>(response: ApiEnvelope<T>, fallbackMessage: string): T {
@@ -195,6 +199,33 @@ export async function listBrowserProfiles(): Promise<BrowserProfile[]> {
     '/api/browser/profiles'
   )
   return unwrap(response.data, t('Failed to load browser profiles'))
+}
+
+export async function listBrowserProfileChannels(): Promise<
+  BrowserProfileChannel[]
+> {
+  const response = await api.get<ApiEnvelope<BrowserProfileChannel[]>>(
+    '/api/browser/profile-channels'
+  )
+  return unwrap(response.data, t('Failed to load Codex channels'))
+}
+
+export async function launchBrowserProfile(id: number): Promise<BrowserLaunch> {
+  const response = await api.post<ApiEnvelope<BrowserLaunch>>(
+    `/api/browser/profiles/${id}/launch`,
+    undefined,
+    mutationConfig
+  )
+  return unwrap(response.data, t('Failed to open browser profile'))
+}
+
+export async function cancelBrowserLaunch(launchId: string): Promise<void> {
+  const response = await api.post<ApiEnvelope>(
+    `/api/browser/launches/${encodeURIComponent(launchId)}/cancel`,
+    undefined,
+    mutationConfig
+  )
+  assertSuccess(response.data, t('Failed to stop browser profile'))
 }
 
 export async function createBrowserProfile(

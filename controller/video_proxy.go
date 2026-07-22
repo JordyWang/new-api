@@ -67,7 +67,12 @@ func VideoProxy(c *gin.Context) {
 	}
 
 	var videoURL string
-	proxy := channel.GetSetting().Proxy
+	proxy, err := service.ResolveChannelProxyURL(channel)
+	if err != nil {
+		logger.LogError(c.Request.Context(), fmt.Sprintf("Failed to resolve proxy for task %s: %s", taskID, err.Error()))
+		videoProxyError(c, http.StatusInternalServerError, "server_error", "Failed to resolve channel proxy")
+		return
+	}
 	client := service.GetSSRFProtectedHTTPClient()
 	if proxy != "" {
 		// 渠道代理路径的连接由代理侧建立，无法做拨号时逐 IP 校验，

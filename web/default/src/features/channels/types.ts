@@ -391,7 +391,23 @@ export type BrowserOAuthProfile = {
   agent_online: boolean
   agent_runtimes: string[]
   proxy_name: string
+  proxy_max_channel_accounts: number
+  proxy_channel_account_count: number
+  proxy_profile_count: number
+  proxy_at_capacity: boolean
   fingerprint_name: string
+}
+
+export type ManagedProxy = {
+  id: number
+  name: string
+  scheme: 'http' | 'https' | 'socks5' | 'socks5h'
+  url_masked: string
+  has_credentials: boolean
+  enabled: boolean
+  max_channel_accounts: number
+  channel_account_count: number
+  profile_count: number
 }
 
 export type CodexBrowserOAuthFlowStatus =

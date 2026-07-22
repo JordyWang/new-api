@@ -2,7 +2,6 @@ package service
 
 import (
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 
@@ -54,60 +53,13 @@ type CodexBrowserOAuthCompletion struct {
 }
 
 func StartCodexBrowserOAuthFlow(userId int, channelId int, profileId int) (*CodexBrowserOAuthFlowView, error) {
-	profile, err := model.GetBrowserProfileById(profileId)
-	if err != nil {
-		return nil, err
-	}
-	if !profile.Enabled {
-		return nil, errors.New("browser profile is disabled")
-	}
-	agent, err := model.GetBrowserAgentById(profile.AgentId)
-	if err != nil {
-		return nil, err
-	}
-	if !agent.Enabled {
-		return nil, errors.New("browser agent is disabled")
-	}
-	if !browserAgentHasCapability(agent.Metadata, browseragentapi.CapabilityStrictProxyGeoV1) {
-		return nil, errors.New("browser agent does not enforce strict proxy geography; upgrade and restart the agent")
-	}
-	if !browserAgentHasCapability(agent.Metadata, browseragentapi.CapabilityProxyGeoOverlayV1) {
-		return nil, errors.New("browser agent does not derive locale and timezone from proxy GeoIP; upgrade and restart the agent")
-	}
 	now := time.Now().Unix()
-	if agent.LastSeenAt < now-int64(browserAgentOnlineWindow/time.Second) {
-		return nil, errors.New("browser agent is offline")
-	}
-	var runtimes []string
-	if err := common.UnmarshalJsonStr(agent.Runtimes, &runtimes); err != nil {
-		return nil, errors.New("browser agent runtime advertisement is invalid")
-	}
-	runtimeAvailable := false
-	for _, runtimeKey := range runtimes {
-		if runtimeKey == profile.RuntimeKey {
-			runtimeAvailable = true
-			break
-		}
-	}
-	if !runtimeAvailable {
-		return nil, fmt.Errorf("browser runtime %q is not available on the selected agent", profile.RuntimeKey)
-	}
-
-	proxy, err := model.GetBrowserProxyById(profile.ProxyId)
+	profile, agent, _, _, err := loadReadyBrowserProfile(profileId, now)
 	if err != nil {
 		return nil, err
 	}
-	if !proxy.Enabled {
-		return nil, errors.New("browser proxy is disabled")
-	}
-	fingerprint, err := model.GetBrowserFingerprintById(profile.FingerprintId)
-	if err != nil {
-		return nil, err
-	}
-	if !fingerprint.Enabled {
-		return nil, errors.New("browser fingerprint is disabled")
-	}
 
+	additionalProxyAccounts := int64(1)
 	if channelId > 0 {
 		channel, err := model.GetChannelById(channelId, false)
 		if err != nil {
@@ -115,6 +67,30 @@ func StartCodexBrowserOAuthFlow(userId int, channelId int, profileId int) (*Code
 		}
 		if channel.Type != constant.ChannelTypeCodex {
 			return nil, errors.New("channel type is not Codex")
+		}
+		boundProfile, err := model.GetBrowserProfileByChannelId(channelId)
+		if err == nil && boundProfile.Id != profile.Id {
+			return nil, model.ErrBrowserChannelBound
+		}
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
+		}
+		if profile.ChannelId != nil && *profile.ChannelId != channelId {
+			return nil, model.ErrBrowserProfileBound
+		}
+		channelProxyId := channel.GetSetting().BrowserProxyId
+		if channelProxyId > 0 && channelProxyId != profile.ProxyId {
+			return nil, errors.New("browser profile and channel must use the same managed proxy")
+		}
+		if channelProxyId == profile.ProxyId {
+			additionalProxyAccounts = 0
+		}
+	} else if profile.ChannelId != nil {
+		return nil, errors.New("browser profile is already bound; select its channel instead of creating a new one")
+	}
+	if additionalProxyAccounts > 0 {
+		if err := model.CheckBrowserProxyChannelCapacity(profile.ProxyId, additionalProxyAccounts); err != nil {
+			return nil, err
 		}
 	}
 

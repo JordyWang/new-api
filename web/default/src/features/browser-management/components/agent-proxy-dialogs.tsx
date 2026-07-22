@@ -77,6 +77,11 @@ function createProxySchema(t: TFunction) {
           message: t('Enter an HTTP, HTTPS, SOCKS5, or SOCKS5H proxy URL'),
         }
       ),
+    max_channel_accounts: z
+      .number()
+      .int(t('Channel account limit must be a whole number'))
+      .min(0, t('Channel account limit cannot be negative'))
+      .max(100000, t('Channel account limit cannot exceed 100000')),
     enabled: z.boolean(),
   })
 }
@@ -228,7 +233,12 @@ export function ProxyDialog(props: ProxyDialogProps) {
   const proxySchema = useMemo(() => createProxySchema(t), [t])
   const form = useForm<ProxyFormValues>({
     resolver: zodResolver(proxySchema),
-    defaultValues: { name: '', url: '', enabled: true },
+    defaultValues: {
+      name: '',
+      url: '',
+      max_channel_accounts: 5,
+      enabled: true,
+    },
   })
 
   useEffect(() => {
@@ -236,6 +246,7 @@ export function ProxyDialog(props: ProxyDialogProps) {
     form.reset({
       name: props.proxy?.name ?? '',
       url: '',
+      max_channel_accounts: props.proxy?.max_channel_accounts ?? 5,
       enabled: props.proxy?.enabled ?? true,
     })
   }, [form, props.open, props.proxy])
@@ -338,6 +349,37 @@ export function ProxyDialog(props: ProxyDialogProps) {
                     {props.proxy
                       ? t('Leave empty to keep the stored proxy URL.')
                       : t('Supports HTTP, HTTPS, SOCKS5, and SOCKS5H.')}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name='max_channel_accounts'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('Channel account limit')}</FormLabel>
+                  <FormControl>
+                    <Input
+                      {...field}
+                      type='number'
+                      min={0}
+                      max={100000}
+                      step={1}
+                      onChange={(event) =>
+                        field.onChange(
+                          event.target.value === ''
+                            ? 0
+                            : event.target.valueAsNumber
+                        )
+                      }
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    {t(
+                      'Maximum number of channel accounts that may use this proxy. 0 means unlimited.'
+                    )}
                   </FormDescription>
                   <FormMessage />
                 </FormItem>

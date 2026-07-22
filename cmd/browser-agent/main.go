@@ -249,6 +249,23 @@ func claimLoop(ctx context.Context, client *agentClient, instanceId string, conf
 			} else {
 				log.Printf("OAuth flow %s completed", claim.FlowId)
 			}
+		} else {
+			launch, launchErr := client.claimLaunch(ctx, instanceId)
+			if launchErr != nil {
+				log.Printf("browser launch claim failed: %v", launchErr)
+			} else if launch != nil {
+				log.Printf("claimed browser launch %s for profile %s", launch.LaunchId, launch.Profile.Name)
+				if executeErr := executeBrowserLaunch(ctx, client, instanceId, config, launch); executeErr != nil {
+					if !errors.Is(executeErr, errFlowTerminatedByServer) && !errors.Is(executeErr, context.Canceled) {
+						log.Printf("browser launch %s failed: %v", launch.LaunchId, executeErr)
+						if failErr := client.failLaunch(context.Background(), instanceId, launch.LaunchId, executeErr.Error()); failErr != nil {
+							log.Printf("report browser launch failure %s: %v", launch.LaunchId, failErr)
+						}
+					}
+				} else {
+					log.Printf("browser launch %s completed", launch.LaunchId)
+				}
+			}
 		}
 
 		select {
@@ -292,6 +309,14 @@ func (client *agentClient) claim(ctx context.Context, instanceId string) (*brows
 	return response.Data, nil
 }
 
+func (client *agentClient) claimLaunch(ctx context.Context, instanceId string) (*browseragentapi.BrowserLaunchClaim, error) {
+	var response apiEnvelope[*browseragentapi.BrowserLaunchClaim]
+	if err := client.post(ctx, "/api/browser-agent/launches/claim", flowInstanceRequest{InstanceId: instanceId}, &response); err != nil {
+		return nil, err
+	}
+	return response.Data, nil
+}
+
 func (client *agentClient) markRunning(ctx context.Context, instanceId string, flowId string) error {
 	var response apiEnvelope[map[string]any]
 	return client.post(ctx, "/api/browser-agent/codex/"+url.PathEscape(flowId)+"/running", flowInstanceRequest{InstanceId: instanceId}, &response)
@@ -321,6 +346,31 @@ func (client *agentClient) failFlow(ctx context.Context, instanceId string, flow
 
 func (client *agentClient) flowStatus(ctx context.Context, instanceId string, flowId string) (string, error) {
 	requestURL := "/api/browser-agent/codex/" + url.PathEscape(flowId) + "/status?instance_id=" + url.QueryEscape(instanceId)
+	var response apiEnvelope[flowStatusResponse]
+	if err := client.get(ctx, requestURL, &response); err != nil {
+		return "", err
+	}
+	return response.Data.Status, nil
+}
+
+func (client *agentClient) markLaunchRunning(ctx context.Context, instanceId string, launchId string) error {
+	var response apiEnvelope[map[string]any]
+	return client.post(ctx, "/api/browser-agent/launches/"+url.PathEscape(launchId)+"/running", flowInstanceRequest{InstanceId: instanceId}, &response)
+}
+
+func (client *agentClient) completeLaunch(ctx context.Context, instanceId string, launchId string) error {
+	var response apiEnvelope[map[string]any]
+	return client.post(ctx, "/api/browser-agent/launches/"+url.PathEscape(launchId)+"/complete", flowInstanceRequest{InstanceId: instanceId}, &response)
+}
+
+func (client *agentClient) failLaunch(ctx context.Context, instanceId string, launchId string, message string) error {
+	request := flowFailRequest{InstanceId: instanceId, Message: message}
+	var response apiEnvelope[map[string]any]
+	return client.post(ctx, "/api/browser-agent/launches/"+url.PathEscape(launchId)+"/fail", request, &response)
+}
+
+func (client *agentClient) launchStatus(ctx context.Context, instanceId string, launchId string) (string, error) {
+	requestURL := "/api/browser-agent/launches/" + url.PathEscape(launchId) + "/status?instance_id=" + url.QueryEscape(instanceId)
 	var response apiEnvelope[flowStatusResponse]
 	if err := client.get(ctx, requestURL, &response); err != nil {
 		return "", err

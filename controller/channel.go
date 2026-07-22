@@ -474,12 +474,11 @@ func validateChannel(channel *model.Channel, isAdd bool) error {
 	}
 	channelSetting := channel.GetSetting()
 	if channelSetting.BrowserProxyId > 0 {
-		if channel.Type != constant.ChannelTypeCodex {
-			return fmt.Errorf("managed browser proxies can only be used with Codex channels")
-		}
 		if _, err := model.GetBrowserProxyById(channelSetting.BrowserProxyId); err != nil {
-			return fmt.Errorf("managed browser proxy is invalid: %w", err)
+			return fmt.Errorf("managed proxy is invalid: %w", err)
 		}
+		channelSetting.Proxy = ""
+		channel.SetSetting(channelSetting)
 	}
 
 	// 如果是添加操作，检查 channel 和 key 是否为空

@@ -35,6 +35,7 @@ import type {
   GetChannelResponse,
   GetChannelsParams,
   GetChannelsResponse,
+  ManagedProxy,
   MultiKeyManageParams,
   MultiKeyStatusResponse,
   SearchChannelsParams,
@@ -82,12 +83,26 @@ type BrowserOAuthResponse<T = undefined> = {
   data?: T
 }
 
-export async function getBrowserOAuthProfiles(): Promise<
-  BrowserOAuthResponse<BrowserOAuthProfile[]>
+export async function getManagedProxies(): Promise<
+  BrowserOAuthResponse<ManagedProxy[]>
 > {
+  const res = await api.get<BrowserOAuthResponse<ManagedProxy[]>>(
+    '/api/browser-oauth/proxies',
+    { skipBusinessError: true, skipErrorHandler: true }
+  )
+  return res.data
+}
+
+export async function getBrowserOAuthProfiles(
+  channelId: number | null
+): Promise<BrowserOAuthResponse<BrowserOAuthProfile[]>> {
   const res = await api.get<BrowserOAuthResponse<BrowserOAuthProfile[]>>(
     '/api/browser-oauth/profiles',
-    { skipBusinessError: true, skipErrorHandler: true }
+    {
+      params: { channel_id: channelId ?? 0 },
+      skipBusinessError: true,
+      skipErrorHandler: true,
+    }
   )
   return res.data
 }

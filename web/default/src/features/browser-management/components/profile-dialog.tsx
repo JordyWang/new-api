@@ -59,30 +59,50 @@ import type {
   BrowserAgent,
   BrowserFingerprint,
   BrowserProfile,
+  BrowserProfileChannel,
   BrowserProxy,
 } from '../types'
 
-function createProfileSchema(t: TFunction) {
-  return z.object({
-    name: z
-      .string()
-      .trim()
-      .min(1, t('Name is required'))
-      .max(128, t('Name must not exceed 128 characters')),
-    agent_id: z.number().int().positive(t('Select a browser agent')),
-    proxy_id: z.number().int().positive(t('Select a managed proxy')),
-    fingerprint_id: z
-      .number()
-      .int()
-      .positive(t('Select a browser fingerprint')),
-    runtime_key: z
-      .string()
-      .trim()
-      .min(1, t('Runtime key is required'))
-      .regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/, t('Runtime key is invalid')),
-    persistent: z.boolean(),
-    enabled: z.boolean(),
-  })
+function createProfileSchema(t: TFunction, channels: BrowserProfileChannel[]) {
+  return z
+    .object({
+      name: z
+        .string()
+        .trim()
+        .min(1, t('Name is required'))
+        .max(128, t('Name must not exceed 128 characters')),
+      channel_id: z.number().int().positive().nullable(),
+      agent_id: z.number().int().positive(t('Select a browser agent')),
+      proxy_id: z.number().int().positive(t('Select a managed proxy')),
+      fingerprint_id: z
+        .number()
+        .int()
+        .positive(t('Select a browser fingerprint')),
+      runtime_key: z
+        .string()
+        .trim()
+        .min(1, t('Runtime key is required'))
+        .regex(
+          /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/,
+          t('Runtime key is invalid')
+        ),
+      persistent: z.boolean(),
+      enabled: z.boolean(),
+    })
+    .superRefine((values, context) => {
+      if (!values.channel_id) return
+      const channel = channels.find((item) => item.id === values.channel_id)
+      if (
+        channel?.browser_proxy_id &&
+        channel.browser_proxy_id !== values.proxy_id
+      ) {
+        context.addIssue({
+          code: 'custom',
+          path: ['proxy_id'],
+          message: t('The profile and channel must use the same managed proxy'),
+        })
+      }
+    })
 }
 
 type ProfileFormValues = z.infer<ReturnType<typeof createProfileSchema>>
@@ -94,6 +114,7 @@ type ProfileDialogProps = {
   agents: BrowserAgent[]
   proxies: BrowserProxy[]
   fingerprints: BrowserFingerprint[]
+  channels: BrowserProfileChannel[]
 }
 
 function profileDefaults(
@@ -102,10 +123,17 @@ function profileDefaults(
   proxies: BrowserProxy[],
   fingerprints: BrowserFingerprint[]
 ): ProfileFormValues {
+  const availableProxy = proxies.find(
+    (proxy) =>
+      proxy.enabled &&
+      (proxy.max_channel_accounts === 0 ||
+        proxy.channel_account_count < proxy.max_channel_accounts)
+  )
   return {
     name: profile?.name ?? '',
+    channel_id: profile?.channel_id ?? null,
     agent_id: profile?.agent_id ?? agents[0]?.id ?? 0,
-    proxy_id: profile?.proxy_id ?? proxies[0]?.id ?? 0,
+    proxy_id: profile?.proxy_id ?? availableProxy?.id ?? 0,
     fingerprint_id: profile?.fingerprint_id ?? fingerprints[0]?.id ?? 0,
     runtime_key: profile?.runtime_key ?? '',
     persistent: profile?.persistent ?? true,
@@ -116,20 +144,49 @@ function profileDefaults(
 export function ProfileDialog(props: ProfileDialogProps) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
-  const profileSchema = useMemo(() => createProfileSchema(t), [t])
+  const profileSchema = useMemo(
+    () => createProfileSchema(t, props.channels),
+    [props.channels, t]
+  )
+  const orderedProxies = useMemo(
+    () =>
+      [...props.proxies].sort((left, right) => {
+        const leftAvailable =
+          left.enabled &&
+          (left.max_channel_accounts === 0 ||
+            left.channel_account_count < left.max_channel_accounts)
+        const rightAvailable =
+          right.enabled &&
+          (right.max_channel_accounts === 0 ||
+            right.channel_account_count < right.max_channel_accounts)
+        if (leftAvailable !== rightAvailable) return leftAvailable ? -1 : 1
+        if (left.profile_count !== right.profile_count) {
+          return left.profile_count - right.profile_count
+        }
+        if (left.channel_account_count !== right.channel_account_count) {
+          return left.channel_account_count - right.channel_account_count
+        }
+        return left.id - right.id
+      }),
+    [props.proxies]
+  )
   const form = useForm<ProfileFormValues>({
     resolver: zodResolver(profileSchema),
     defaultValues: profileDefaults(
       props.profile,
       props.agents,
-      props.proxies,
+      orderedProxies,
       props.fingerprints
     ),
   })
   const selectedAgentId = form.watch('agent_id')
   const selectedRuntimeKey = form.watch('runtime_key')
+  const selectedChannelId = form.watch('channel_id')
   const selectedAgent = props.agents.find(
     (agent) => agent.id === selectedAgentId
+  )
+  const selectedChannel = props.channels.find(
+    (channel) => channel.id === selectedChannelId
   )
   const runtimeOptions = useMemo(() => {
     const runtimes = new Set(selectedAgent?.runtimes ?? [])
@@ -146,7 +203,7 @@ export function ProfileDialog(props: ProfileDialogProps) {
         profileDefaults(
           props.profile,
           props.agents,
-          props.proxies,
+          orderedProxies,
           props.fingerprints
         )
       )
@@ -156,7 +213,7 @@ export function ProfileDialog(props: ProfileDialogProps) {
     props.open,
     props.profile,
     props.agents,
-    props.proxies,
+    orderedProxies,
     props.fingerprints,
   ])
 
@@ -197,14 +254,42 @@ export function ProfileDialog(props: ProfileDialogProps) {
     value: String(agent.id),
     label: `${agent.name}${agent.online ? '' : ` (${t('Offline')})`}`,
   }))
-  const proxyItems = props.proxies.map((proxy) => ({
-    value: String(proxy.id),
-    label: proxy.name,
-  }))
+  const proxyItems = orderedProxies.map((proxy) => {
+    const atCapacity =
+      proxy.max_channel_accounts > 0 &&
+      proxy.channel_account_count >= proxy.max_channel_accounts
+    const isCurrent = proxy.id === props.profile?.proxy_id
+    const requiredByChannel = proxy.id === selectedChannel?.browser_proxy_id
+    return {
+      value: String(proxy.id),
+      label: `${proxy.name} · ${t('Profiles')}: ${proxy.profile_count} · ${t('Channel accounts')}: ${proxy.channel_account_count}/${proxy.max_channel_accounts || t('Unlimited')}`,
+      disabled:
+        !proxy.enabled || (atCapacity && !isCurrent && !requiredByChannel),
+    }
+  })
   const fingerprintItems = props.fingerprints.map((fingerprint) => ({
     value: String(fingerprint.id),
     label: fingerprint.name,
   }))
+  const channelItems = [
+    {
+      value: 'unbound',
+      label: t('Unbound — bind automatically after first OAuth login'),
+      disabled: false,
+    },
+    ...props.channels.map((channel) => ({
+      value: String(channel.id),
+      label:
+        channel.browser_profile_id &&
+        channel.browser_profile_id !== props.profile?.id
+          ? `${channel.name} (${t('Bound to another profile')})`
+          : channel.name,
+      disabled: Boolean(
+        channel.browser_profile_id &&
+        channel.browser_profile_id !== props.profile?.id
+      ),
+    })),
+  ]
 
   return (
     <Dialog
@@ -254,6 +339,63 @@ export function ProfileDialog(props: ProfileDialogProps) {
                   <FormControl>
                     <Input {...field} autoComplete='off' />
                   </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name='channel_id'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('Codex channel')}</FormLabel>
+                  <Select
+                    items={channelItems}
+                    value={field.value ? String(field.value) : 'unbound'}
+                    onValueChange={(value) => {
+                      const channelId =
+                        value === 'unbound' ? null : Number(value)
+                      field.onChange(channelId)
+                      const channel = props.channels.find(
+                        (item) => item.id === channelId
+                      )
+                      if (channel?.browser_proxy_id) {
+                        form.setValue('proxy_id', channel.browser_proxy_id, {
+                          shouldDirty: true,
+                          shouldValidate: true,
+                        })
+                      }
+                    }}
+                  >
+                    <FormControl>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent alignItemWithTrigger={false}>
+                      <SelectGroup>
+                        {channelItems.map((item) => (
+                          <SelectItem
+                            key={item.value}
+                            value={item.value}
+                            disabled={item.disabled}
+                          >
+                            {item.label}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                  <FormDescription>
+                    {selectedChannel?.browser_proxy_id
+                      ? t(
+                          'This channel requires managed proxy #{{proxyId}}; the profile proxy is kept in sync.',
+                          { proxyId: selectedChannel.browser_proxy_id }
+                        )
+                      : t(
+                          'Leave unbound when this profile will create its channel through the first OAuth login.'
+                        )}
+                  </FormDescription>
                   <FormMessage />
                 </FormItem>
               )}
@@ -349,7 +491,11 @@ export function ProfileDialog(props: ProfileDialogProps) {
                     <SelectContent alignItemWithTrigger={false}>
                       <SelectGroup>
                         {proxyItems.map((item) => (
-                          <SelectItem key={item.value} value={item.value}>
+                          <SelectItem
+                            key={item.value}
+                            value={item.value}
+                            disabled={item.disabled}
+                          >
                             {item.label}
                           </SelectItem>
                         ))}

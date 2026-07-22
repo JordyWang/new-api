@@ -96,6 +96,80 @@ func TestManagedBrowserUsesProxyGeoOverlay(t *testing.T) {
 	assert.Equal(t, "localhost,127.0.0.1,::1", environmentValues["NO_PROXY"])
 }
 
+func TestStandaloneBrowserClaimValidation(t *testing.T) {
+	runtimes := map[string]string{"chromium": "/opt/chromium"}
+	valid := validStandaloneBrowserClaim()
+	require.NoError(t, validateBrowserLaunchClaim(valid, runtimes))
+
+	tests := []struct {
+		name  string
+		claim browseragentapi.BrowserLaunchClaim
+	}{
+		{name: "different host", claim: browseragentapi.BrowserLaunchClaim{LaunchId: "launch-valid", StartURL: "https://example.com/", ExpiresAt: valid.ExpiresAt, Profile: valid.Profile, Proxy: valid.Proxy}},
+		{name: "host suffix confusion", claim: browseragentapi.BrowserLaunchClaim{LaunchId: "launch-valid", StartURL: "https://chatgpt.com.example.com/", ExpiresAt: valid.ExpiresAt, Profile: valid.Profile, Proxy: valid.Proxy}},
+		{name: "insecure scheme", claim: browseragentapi.BrowserLaunchClaim{LaunchId: "launch-valid", StartURL: "http://chatgpt.com/", ExpiresAt: valid.ExpiresAt, Profile: valid.Profile, Proxy: valid.Proxy}},
+		{name: "query injection", claim: browseragentapi.BrowserLaunchClaim{LaunchId: "launch-valid", StartURL: "https://chatgpt.com/?next=https://example.com", ExpiresAt: valid.ExpiresAt, Profile: valid.Profile, Proxy: valid.Proxy}},
+		{name: "expired", claim: browseragentapi.BrowserLaunchClaim{LaunchId: "launch-valid", StartURL: "https://chatgpt.com/", ExpiresAt: time.Now().Unix() - 1, Profile: valid.Profile, Proxy: valid.Proxy}},
+		{name: "invalid profile key", claim: browseragentapi.BrowserLaunchClaim{LaunchId: "launch-valid", StartURL: "https://chatgpt.com/", ExpiresAt: valid.ExpiresAt, Profile: browseragentapi.CodexOAuthProfile{RuntimeKey: "chromium", DataKey: "../escape"}, Proxy: valid.Proxy}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert.Error(t, validateBrowserLaunchClaim(&test.claim, runtimes))
+		})
+	}
+}
+
+func TestStandaloneBrowserUsesManagedProfileProxyFingerprintAndPreflight(t *testing.T) {
+	launch := validStandaloneBrowserClaim()
+	claim := &browseragentapi.CodexOAuthClaim{
+		FlowId:      launch.LaunchId,
+		State:       launch.LaunchId,
+		ExpiresAt:   launch.ExpiresAt,
+		Profile:     launch.Profile,
+		Proxy:       launch.Proxy,
+		Fingerprint: launch.Fingerprint,
+	}
+	geo := &proxyGeoIdentity{
+		CountryCode: "US", Locale: "en-US", Timezone: "America/Los_Angeles",
+		Languages: []string{"en-US", "en"}, AcceptLanguage: "en-US,en",
+	}
+	preflightURL := "http://127.0.0.1:1455/browser/preflight?token=" + launch.LaunchId
+
+	args, err := buildBrowserLaunchArgs(
+		"/profiles/"+launch.Profile.DataKey,
+		"/profiles/"+launch.Profile.DataKey+"/fingerprint.json",
+		"http://127.0.0.1:3000",
+		preflightURL,
+		claim,
+		geo,
+	)
+	require.NoError(t, err)
+	assert.Contains(t, args, "--user-data-dir=/profiles/"+launch.Profile.DataKey)
+	assert.Contains(t, args, "--proxy-server=http://127.0.0.1:3000")
+	assert.Contains(t, args, "--user-agent=standalone-agent")
+	assert.Equal(t, preflightURL, args[len(args)-1])
+	assert.NotContains(t, args, launch.StartURL)
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	callback := serveOAuthCallbackServer(listener, launch.LaunchId, launch.StartURL, geo)
+	t.Cleanup(callback.Close)
+	request, err := http.NewRequest(
+		http.MethodPost,
+		"http://"+listener.Addr().String()+"/browser/preflight?token="+launch.LaunchId,
+		strings.NewReader(`{"locale":"en-US","languages":["en-US","en"],"timezone":"America/Los_Angeles"}`),
+	)
+	require.NoError(t, err)
+	request.Header.Set("Content-Type", "application/json")
+	response, err := (&http.Client{Timeout: 2 * time.Second}).Do(request)
+	require.NoError(t, err)
+	defer response.Body.Close()
+	var payload map[string]string
+	require.NoError(t, common.DecodeJson(response.Body, &payload))
+	assert.Equal(t, http.StatusOK, response.StatusCode)
+	assert.Equal(t, launch.StartURL, payload["authorize_url"])
+}
+
 func TestFingerprintFileCombinesFixedCoreWithProxyGeoOverlay(t *testing.T) {
 	geo := &proxyGeoIdentity{
 		CountryCode:    "SG",
@@ -238,4 +312,20 @@ func TestProxyEndpointAddsSchemeDefaultPort(t *testing.T) {
 	assert.Equal(t, "proxy.example.com:443", proxyEndpoint(httpsProxy))
 	assert.Equal(t, "proxy.example.com:1080", proxyEndpoint(socksProxy))
 	assert.Equal(t, "proxy.example.com:3128", proxyEndpoint(explicitProxy))
+}
+
+func validStandaloneBrowserClaim() *browseragentapi.BrowserLaunchClaim {
+	return &browseragentapi.BrowserLaunchClaim{
+		LaunchId:  "launch-valid",
+		StartURL:  "https://chatgpt.com/",
+		ExpiresAt: time.Now().Add(time.Hour).Unix(),
+		Profile: browseragentapi.CodexOAuthProfile{
+			Id: 1, Name: "primary", RuntimeKey: "chromium", DataKey: "profile-valid", Persistent: true,
+		},
+		Proxy: browseragentapi.CodexOAuthProxy{Id: 2, URL: "http://203.0.113.10:8080"},
+		Fingerprint: browseragentapi.CodexOAuthFingerprint{
+			Id: 3, Name: "fixed", UserAgent: "standalone-agent", ViewportW: 1280, ViewportH: 800,
+			Payload: `{"fingerprint":{"canvas":{"noise_seed":"fixed"}}}`, LaunchArgs: `[]`, Environment: `{}`,
+		},
+	}
 }

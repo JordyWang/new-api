@@ -28,7 +28,7 @@ import {
   ShieldCheck,
   XCircle,
 } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -110,25 +110,31 @@ export function CodexBrowserOAuthCard(props: CodexBrowserOAuthCardProps) {
   const wasOpenRef = useRef(props.open)
 
   const profilesQuery = useQuery({
-    queryKey: ['browser-oauth', 'profiles'],
+    queryKey: ['browser-oauth', 'profiles', props.channelId ?? 0],
     queryFn: async () => {
-      const response = await getBrowserOAuthProfiles()
+      const response = await getBrowserOAuthProfiles(props.channelId)
       return requireData(response, t('Failed to load browser profiles'))
     },
     enabled: props.open && !props.disabled,
     staleTime: 15_000,
   })
   const profiles = profilesQuery.data ?? EMPTY_PROFILES
+  const selectableProfiles = useMemo(
+    () => profiles.filter((profile) => !profile.proxy_at_capacity),
+    [profiles]
+  )
 
   useEffect(() => {
-    if (!profiles.length) {
+    if (!selectableProfiles.length) {
       setSelectedProfileId(0)
       return
     }
-    if (!profiles.some((profile) => profile.id === selectedProfileId)) {
-      setSelectedProfileId(profiles[0].id)
+    if (
+      !selectableProfiles.some((profile) => profile.id === selectedProfileId)
+    ) {
+      setSelectedProfileId(selectableProfiles[0].id)
     }
-  }, [profiles, selectedProfileId])
+  }, [selectableProfiles, selectedProfileId])
 
   useEffect(() => {
     if (props.flowId && !activeFlowId) setActiveFlowId(props.flowId)
@@ -252,10 +258,17 @@ export function CodexBrowserOAuthCard(props: CodexBrowserOAuthCardProps) {
     },
   })
 
-  const profileItems = profiles.map((profile) => ({
-    value: String(profile.id),
-    label: `${profile.name} · ${profile.agent_name} · ${profile.proxy_name}`,
-  }))
+  const profileItems = profiles.map((profile) => {
+    const capacity =
+      profile.proxy_max_channel_accounts > 0
+        ? `${profile.proxy_channel_account_count}/${profile.proxy_max_channel_accounts}`
+        : `${profile.proxy_channel_account_count}/${t('Unlimited')}`
+    return {
+      value: String(profile.id),
+      label: `${profile.name} · ${profile.agent_name} · ${profile.proxy_name} · ${t('Profiles')}: ${profile.proxy_profile_count} · ${t('Channel accounts')}: ${capacity}`,
+      disabled: profile.proxy_at_capacity,
+    }
+  })
   const isFlowActive = Boolean(flow && ACTIVE_FLOW_STATUSES.has(flow.status))
   const status = flow?.status
   let statusLabel = t('Ready to start')
@@ -334,7 +347,11 @@ export function CodexBrowserOAuthCard(props: CodexBrowserOAuthCardProps) {
             <SelectContent alignItemWithTrigger={false}>
               <SelectGroup>
                 {profileItems.map((item) => (
-                  <SelectItem key={item.value} value={item.value}>
+                  <SelectItem
+                    key={item.value}
+                    value={item.value}
+                    disabled={item.disabled}
+                  >
                     {item.label}
                   </SelectItem>
                 ))}
@@ -354,6 +371,16 @@ export function CodexBrowserOAuthCard(props: CodexBrowserOAuthCardProps) {
               <p className='text-muted-foreground text-xs'>
                 {t(
                   'No available profiles. Check that the profile, proxy, fingerprint, and agent are enabled and the agent is online.'
+                )}
+              </p>
+            )}
+          {!profilesQuery.isPending &&
+            !profilesQuery.isError &&
+            profiles.length > 0 &&
+            selectableProfiles.length === 0 && (
+              <p className='text-muted-foreground text-xs'>
+                {t(
+                  'All available profiles use managed proxies that have reached their channel account limit.'
                 )}
               </p>
             )}

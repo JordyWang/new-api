@@ -40,6 +40,9 @@ export type BrowserProxy = {
   url_masked: string
   has_credentials: boolean
   enabled: boolean
+  max_channel_accounts: number
+  channel_account_count: number
+  profile_count: number
   created_at: number
   updated_at: number
 }
@@ -61,6 +64,8 @@ export type BrowserFingerprint = {
 export type BrowserProfile = {
   id: number
   name: string
+  channel_id: number | null
+  channel_name: string
   agent_id: number
   proxy_id: number
   fingerprint_id: number
@@ -73,7 +78,46 @@ export type BrowserProfile = {
   agent_online: boolean
   agent_runtimes: string[]
   proxy_name: string
+  proxy_max_channel_accounts: number
+  proxy_channel_account_count: number
+  proxy_profile_count: number
+  proxy_at_capacity: boolean
   fingerprint_name: string
+  active_launch_id: string
+  active_launch_status: BrowserLaunchStatus | ''
+}
+
+export type BrowserProfileChannel = {
+  id: number
+  name: string
+  browser_proxy_id: number
+  browser_profile_id: number | null
+}
+
+export type BrowserLaunchStatus =
+  | 'pending'
+  | 'claimed'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'canceled'
+  | 'expired'
+
+export type BrowserLaunch = {
+  id: string
+  status: BrowserLaunchStatus
+  profile_id: number
+  profile_name: string
+  channel_id: number
+  channel_name: string
+  agent_id: number
+  agent_name: string
+  agent_online: boolean
+  expires_at: number
+  created_at: number
+  running_at: number
+  completed_at: number
+  error_message: string
 }
 
 export type BrowserAgentInput = {
@@ -85,6 +129,7 @@ export type BrowserProxyInput = {
   name: string
   url: string
   enabled: boolean
+  max_channel_accounts: number
 }
 
 export type BrowserFingerprintInput = {
@@ -100,6 +145,7 @@ export type BrowserFingerprintInput = {
 
 export type BrowserProfileInput = {
   name: string
+  channel_id: number | null
   agent_id: number
   proxy_id: number
   fingerprint_id: number

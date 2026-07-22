@@ -10,8 +10,10 @@ import (
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/model"
 
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 func TestValidateBrowserProxyURLAcceptsSupportedPublicProxies(t *testing.T) {
@@ -123,6 +125,45 @@ func TestResolveChannelProxyURLRejectsManagedCredentialProxyBypass(t *testing.T)
 		require.Error(t, err)
 		assert.ErrorContains(t, err, "managed browser proxy 42")
 	}
+}
+
+func TestResolveChannelProxyURLUsesManagedProxyForAnyChannel(t *testing.T) {
+	originalDB := model.DB
+	originalCryptoSecret := common.CryptoSecret
+	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	model.DB = database
+	t.Setenv("CRYPTO_SECRET", "managed-proxy-test-secret")
+	common.CryptoSecret = "managed-proxy-test-secret"
+	ResetBrowserProxyURLCache()
+	t.Cleanup(func() {
+		model.DB = originalDB
+		common.CryptoSecret = originalCryptoSecret
+		ResetBrowserProxyURLCache()
+	})
+	require.NoError(t, database.AutoMigrate(&model.BrowserProxy{}))
+
+	proxyURL := "https://user:password@proxy.example.com:443"
+	ciphertext, err := EncryptBrowserProxyURL(proxyURL)
+	require.NoError(t, err)
+	require.NoError(t, database.Create(&model.BrowserProxy{
+		Id:            19,
+		Name:          "shared proxy",
+		URLCiphertext: ciphertext,
+		Scheme:        "https",
+		Enabled:       true,
+	}).Error)
+	settingBytes, err := common.Marshal(dto.ChannelSettings{BrowserProxyId: 19})
+	require.NoError(t, err)
+	setting := string(settingBytes)
+	channel := &model.Channel{
+		Type:    constant.ChannelTypeOpenAI,
+		Setting: &setting,
+	}
+
+	resolved, err := ResolveChannelProxyURL(channel)
+	require.NoError(t, err)
+	assert.Equal(t, proxyURL, resolved)
 }
 
 func TestParseCodexOAuthKeyPreservesManagedProxyBinding(t *testing.T) {

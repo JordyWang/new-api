@@ -2,6 +2,7 @@ package controller
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -12,6 +13,7 @@ import (
 	_ "time/tzdata"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
@@ -53,9 +55,10 @@ type browserAgentFailRequest struct {
 }
 
 type browserProxyRequest struct {
-	Name    string `json:"name"`
-	URL     string `json:"url"`
-	Enabled *bool  `json:"enabled"`
+	Name               string `json:"name"`
+	URL                string `json:"url"`
+	Enabled            *bool  `json:"enabled"`
+	MaxChannelAccounts *int   `json:"max_channel_accounts"`
 }
 
 type browserFingerprintRequest struct {
@@ -71,6 +74,7 @@ type browserFingerprintRequest struct {
 
 type browserProfileRequest struct {
 	Name          string `json:"name"`
+	ChannelId     *int   `json:"channel_id"`
 	AgentId       int    `json:"agent_id"`
 	ProxyId       int    `json:"proxy_id"`
 	FingerprintId int    `json:"fingerprint_id"`
@@ -101,23 +105,40 @@ type browserAgentResponse struct {
 }
 
 type browserProxyResponse struct {
-	Id             int    `json:"id"`
-	Name           string `json:"name"`
-	Scheme         string `json:"scheme"`
-	URLMasked      string `json:"url_masked"`
-	HasCredentials bool   `json:"has_credentials"`
-	Enabled        bool   `json:"enabled"`
-	CreatedAt      int64  `json:"created_at"`
-	UpdatedAt      int64  `json:"updated_at"`
+	Id                  int    `json:"id"`
+	Name                string `json:"name"`
+	Scheme              string `json:"scheme"`
+	URLMasked           string `json:"url_masked"`
+	HasCredentials      bool   `json:"has_credentials"`
+	Enabled             bool   `json:"enabled"`
+	MaxChannelAccounts  int    `json:"max_channel_accounts"`
+	ChannelAccountCount int64  `json:"channel_account_count"`
+	ProfileCount        int64  `json:"profile_count"`
+	CreatedAt           int64  `json:"created_at"`
+	UpdatedAt           int64  `json:"updated_at"`
 }
 
 type browserProfileResponse struct {
 	model.BrowserProfile
-	AgentName       string   `json:"agent_name"`
-	AgentOnline     bool     `json:"agent_online"`
-	AgentRuntimes   []string `json:"agent_runtimes"`
-	ProxyName       string   `json:"proxy_name"`
-	FingerprintName string   `json:"fingerprint_name"`
+	ChannelName              string   `json:"channel_name"`
+	AgentName                string   `json:"agent_name"`
+	AgentOnline              bool     `json:"agent_online"`
+	AgentRuntimes            []string `json:"agent_runtimes"`
+	ProxyName                string   `json:"proxy_name"`
+	ProxyMaxChannelAccounts  int      `json:"proxy_max_channel_accounts"`
+	ProxyChannelAccountCount int64    `json:"proxy_channel_account_count"`
+	ProxyProfileCount        int64    `json:"proxy_profile_count"`
+	ProxyAtCapacity          bool     `json:"proxy_at_capacity"`
+	FingerprintName          string   `json:"fingerprint_name"`
+	ActiveLaunchId           string   `json:"active_launch_id"`
+	ActiveLaunchStatus       string   `json:"active_launch_status"`
+}
+
+type browserProfileChannelResponse struct {
+	Id               int    `json:"id"`
+	Name             string `json:"name"`
+	BrowserProxyId   int    `json:"browser_proxy_id"`
+	BrowserProfileId *int   `json:"browser_profile_id"`
 }
 
 func ListBrowserAgents(c *gin.Context) {
@@ -263,16 +284,43 @@ func ListBrowserProxies(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	proxyIds := make([]int, 0, len(proxies))
+	for index := range proxies {
+		proxyIds = append(proxyIds, proxies[index].Id)
+	}
+	channelCounts, err := model.CountChannelsByBrowserProxies(proxyIds)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	profileCounts, err := model.CountBrowserProfilesByProxies(proxyIds)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
 	data := make([]browserProxyResponse, 0, len(proxies))
 	for index := range proxies {
-		response, err := browserProxyToResponse(&proxies[index])
+		response, err := browserProxyToResponse(&proxies[index], channelCounts[proxies[index].Id], profileCounts[proxies[index].Id])
 		if err != nil {
 			common.ApiError(c, err)
 			return
 		}
 		data = append(data, response)
 	}
+	sort.SliceStable(data, func(left int, right int) bool {
+		if data[left].ProfileCount != data[right].ProfileCount {
+			return data[left].ProfileCount < data[right].ProfileCount
+		}
+		if data[left].ChannelAccountCount != data[right].ChannelAccountCount {
+			return data[left].ChannelAccountCount < data[right].ChannelAccountCount
+		}
+		return data[left].Id < data[right].Id
+	})
 	c.JSON(http.StatusOK, gin.H{"success": true, "message": "", "data": data})
+}
+
+func ListAvailableBrowserProxies(c *gin.Context) {
+	ListBrowserProxies(c)
 }
 
 func CreateBrowserProxy(c *gin.Context) {
@@ -297,25 +345,34 @@ func CreateBrowserProxy(c *gin.Context) {
 		return
 	}
 	now := time.Now().Unix()
+	maxChannelAccounts := model.DefaultBrowserProxyChannelAccounts
+	if request.MaxChannelAccounts != nil {
+		maxChannelAccounts = *request.MaxChannelAccounts
+	}
+	if maxChannelAccounts < 0 || maxChannelAccounts > model.MaxBrowserProxyChannelAccounts {
+		common.ApiErrorMsg(c, fmt.Sprintf("managed proxy channel account limit must be between 0 and %d", model.MaxBrowserProxyChannelAccounts))
+		return
+	}
 	proxy := &model.BrowserProxy{
-		Name:          name,
-		URLCiphertext: ciphertext,
-		Scheme:        scheme,
-		Enabled:       boolOrDefault(request.Enabled, true),
-		CreatedAt:     now,
-		UpdatedAt:     now,
+		Name:               name,
+		URLCiphertext:      ciphertext,
+		Scheme:             scheme,
+		Enabled:            boolOrDefault(request.Enabled, true),
+		MaxChannelAccounts: maxChannelAccounts,
+		CreatedAt:          now,
+		UpdatedAt:          now,
 	}
 	if err := model.CreateBrowserProxy(proxy); err != nil {
 		common.ApiError(c, err)
 		return
 	}
 	service.ResetBrowserProxyURLCache()
-	response, err := browserProxyToResponse(proxy)
+	response, err := browserProxyToResponse(proxy, 0, 0)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	recordManageAudit(c, "browser_proxy.create", map[string]interface{}{"id": proxy.Id, "name": proxy.Name, "scheme": proxy.Scheme})
+	recordManageAudit(c, "browser_proxy.create", map[string]interface{}{"id": proxy.Id, "name": proxy.Name, "scheme": proxy.Scheme, "max_channel_accounts": proxy.MaxChannelAccounts})
 	c.JSON(http.StatusOK, gin.H{"success": true, "message": "", "data": response})
 }
 
@@ -358,6 +415,13 @@ func UpdateBrowserProxy(c *gin.Context) {
 	if request.Enabled != nil {
 		proxy.Enabled = *request.Enabled
 	}
+	if request.MaxChannelAccounts != nil {
+		if *request.MaxChannelAccounts < 0 || *request.MaxChannelAccounts > model.MaxBrowserProxyChannelAccounts {
+			common.ApiErrorMsg(c, fmt.Sprintf("managed proxy channel account limit must be between 0 and %d", model.MaxBrowserProxyChannelAccounts))
+			return
+		}
+		proxy.MaxChannelAccounts = *request.MaxChannelAccounts
+	}
 	proxy.UpdatedAt = time.Now().Unix()
 	if err := model.UpdateBrowserProxy(proxy, updateURL); err != nil {
 		common.ApiError(c, err)
@@ -365,12 +429,22 @@ func UpdateBrowserProxy(c *gin.Context) {
 	}
 	service.ResetBrowserProxyURLCache()
 	service.ResetProxyClientCache()
-	response, err := browserProxyToResponse(proxy)
+	channelCount, err := model.CountChannelsByBrowserProxy(proxy.Id)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	recordManageAudit(c, "browser_proxy.update", map[string]interface{}{"id": proxy.Id, "name": proxy.Name, "scheme": proxy.Scheme, "url_rotated": updateURL})
+	profileCount, err := model.CountBrowserProfilesByProxy(proxy.Id)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	response, err := browserProxyToResponse(proxy, channelCount, profileCount)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	recordManageAudit(c, "browser_proxy.update", map[string]interface{}{"id": proxy.Id, "name": proxy.Name, "scheme": proxy.Scheme, "url_rotated": updateURL, "max_channel_accounts": proxy.MaxChannelAccounts})
 	c.JSON(http.StatusOK, gin.H{"success": true, "message": "", "data": response})
 }
 
@@ -491,7 +565,7 @@ func DeleteBrowserFingerprint(c *gin.Context) {
 }
 
 func ListBrowserProfiles(c *gin.Context) {
-	profiles, err := browserProfileResponses(false)
+	profiles, err := browserProfileResponses(false, 0)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -500,12 +574,55 @@ func ListBrowserProfiles(c *gin.Context) {
 }
 
 func ListAvailableBrowserProfiles(c *gin.Context) {
-	profiles, err := browserProfileResponses(true)
+	channelId := 0
+	if raw := strings.TrimSpace(c.Query("channel_id")); raw != "" {
+		parsed, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || parsed < 0 {
+			common.ApiErrorMsg(c, "channel ID is invalid")
+			return
+		}
+		channelId = parsed
+	}
+	profiles, err := browserProfileResponses(true, channelId)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "message": "", "data": profiles})
+}
+
+func ListBrowserProfileChannels(c *gin.Context) {
+	channels, err := model.GetChannelsByType(0, -1, true, constant.ChannelTypeCodex)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	profiles, err := model.ListBrowserProfiles()
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	boundProfiles := make(map[int]int, len(profiles))
+	for index := range profiles {
+		if profiles[index].ChannelId != nil {
+			boundProfiles[*profiles[index].ChannelId] = profiles[index].Id
+		}
+	}
+	data := make([]browserProfileChannelResponse, 0, len(channels))
+	for _, channel := range channels {
+		profileId := boundProfiles[channel.Id]
+		var profileIdPointer *int
+		if profileId > 0 {
+			profileIdPointer = &profileId
+		}
+		data = append(data, browserProfileChannelResponse{
+			Id:               channel.Id,
+			Name:             channel.Name,
+			BrowserProxyId:   channel.GetSetting().BrowserProxyId,
+			BrowserProfileId: profileIdPointer,
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "", "data": data})
 }
 
 func CreateBrowserProfile(c *gin.Context) {
@@ -551,6 +668,15 @@ func UpdateBrowserProfile(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	activeLaunch, err := model.HasActiveBrowserLaunchForProfile(id, time.Now().Unix())
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if activeLaunch {
+		common.ApiErrorMsg(c, "stop the active browser before updating this profile")
+		return
+	}
 	profile, err := normalizeBrowserProfileRequest(request, existing)
 	if err != nil {
 		common.ApiErrorMsg(c, err.Error())
@@ -585,6 +711,15 @@ func ResetBrowserProfile(c *gin.Context) {
 		common.ApiErrorMsg(c, "cancel or finish the active OAuth flow before resetting this profile")
 		return
 	}
+	activeLaunch, err := model.HasActiveBrowserLaunchForProfile(id, time.Now().Unix())
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if activeLaunch {
+		common.ApiErrorMsg(c, "stop the active browser before resetting this profile")
+		return
+	}
 	dataKey, err := common.GenerateRandomCharsKey(40)
 	if err != nil {
 		common.ApiError(c, err)
@@ -612,11 +747,53 @@ func DeleteBrowserProfile(c *gin.Context) {
 		common.ApiErrorMsg(c, "cancel or finish the active OAuth flow before deleting this profile")
 		return
 	}
+	activeLaunch, err := model.HasActiveBrowserLaunchForProfile(id, time.Now().Unix())
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if activeLaunch {
+		common.ApiErrorMsg(c, "stop the active browser before deleting this profile")
+		return
+	}
 	if err := model.DeleteBrowserProfile(id); err != nil {
 		common.ApiError(c, err)
 		return
 	}
 	recordManageAudit(c, "browser_profile.delete", map[string]interface{}{"id": id})
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": ""})
+}
+
+func StartBrowserProfileLaunch(c *gin.Context) {
+	id, ok := browserResourceId(c)
+	if !ok {
+		return
+	}
+	launch, err := service.StartBrowserProfileLaunch(id)
+	if err != nil {
+		common.ApiErrorMsg(c, err.Error())
+		return
+	}
+	recordManageAudit(c, "browser_profile.launch", map[string]interface{}{"profile_id": id, "launch_id": launch.Id})
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "", "data": launch})
+}
+
+func GetBrowserProfileLaunch(c *gin.Context) {
+	launch, err := service.GetBrowserProfileLaunch(c.Param("launch_id"))
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "", "data": launch})
+}
+
+func CancelBrowserProfileLaunch(c *gin.Context) {
+	launchId := c.Param("launch_id")
+	if err := service.CancelBrowserProfileLaunch(launchId); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	recordManageAudit(c, "browser_profile.stop", map[string]interface{}{"launch_id": launchId})
 	c.JSON(http.StatusOK, gin.H{"success": true, "message": ""})
 }
 
@@ -811,6 +988,89 @@ func BrowserAgentGetCodexOAuthStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": true, "message": "", "data": gin.H{"status": status}})
 }
 
+func BrowserAgentClaimBrowserLaunch(c *gin.Context) {
+	var request browserAgentFlowRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if !validBrowserAgentInstanceId(request.InstanceId) {
+		common.ApiErrorMsg(c, "browser agent instance ID is invalid")
+		return
+	}
+	claim, err := service.ClaimBrowserProfileLaunch(c.GetInt(middleware.BrowserAgentIdContextKey), request.InstanceId)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "", "data": claim})
+}
+
+func BrowserAgentMarkBrowserLaunchRunning(c *gin.Context) {
+	var request browserAgentFlowRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if !validBrowserAgentInstanceId(request.InstanceId) {
+		common.ApiErrorMsg(c, "browser agent instance ID is invalid")
+		return
+	}
+	if err := service.MarkBrowserProfileLaunchRunning(c.GetInt(middleware.BrowserAgentIdContextKey), request.InstanceId, c.Param("launch_id")); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": ""})
+}
+
+func BrowserAgentCompleteBrowserLaunch(c *gin.Context) {
+	var request browserAgentFlowRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if !validBrowserAgentInstanceId(request.InstanceId) {
+		common.ApiErrorMsg(c, "browser agent instance ID is invalid")
+		return
+	}
+	if err := service.CompleteBrowserProfileLaunch(c.GetInt(middleware.BrowserAgentIdContextKey), request.InstanceId, c.Param("launch_id")); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": ""})
+}
+
+func BrowserAgentFailBrowserLaunch(c *gin.Context) {
+	var request browserAgentFailRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if !validBrowserAgentInstanceId(request.InstanceId) {
+		common.ApiErrorMsg(c, "browser agent instance ID is invalid")
+		return
+	}
+	if err := service.FailBrowserProfileLaunch(c.GetInt(middleware.BrowserAgentIdContextKey), request.InstanceId, c.Param("launch_id"), request.Message); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": ""})
+}
+
+func BrowserAgentGetBrowserLaunchStatus(c *gin.Context) {
+	instanceId := strings.TrimSpace(c.Query("instance_id"))
+	if !validBrowserAgentInstanceId(instanceId) {
+		common.ApiErrorMsg(c, "browser agent instance ID is invalid")
+		return
+	}
+	status, err := service.GetAgentBrowserProfileLaunchStatus(c.GetInt(middleware.BrowserAgentIdContextKey), instanceId, c.Param("launch_id"))
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "", "data": gin.H{"status": status}})
+}
+
 func browserAgentToResponse(agent *model.BrowserAgent) browserAgentResponse {
 	var runtimes []string
 	_ = common.UnmarshalJsonStr(agent.Runtimes, &runtimes)
@@ -841,21 +1101,24 @@ func browserAgentToResponse(agent *model.BrowserAgent) browserAgentResponse {
 	}
 }
 
-func browserProxyToResponse(proxy *model.BrowserProxy) (browserProxyResponse, error) {
+func browserProxyToResponse(proxy *model.BrowserProxy, channelAccountCount int64, profileCount int64) (browserProxyResponse, error) {
 	proxyURL, err := service.DecryptBrowserProxyURL(proxy)
 	if err != nil {
 		return browserProxyResponse{}, err
 	}
 	parsed, _ := url.Parse(proxyURL)
 	return browserProxyResponse{
-		Id:             proxy.Id,
-		Name:           proxy.Name,
-		Scheme:         proxy.Scheme,
-		URLMasked:      service.MaskBrowserProxyURL(proxyURL),
-		HasCredentials: parsed != nil && parsed.User != nil,
-		Enabled:        proxy.Enabled,
-		CreatedAt:      proxy.CreatedAt,
-		UpdatedAt:      proxy.UpdatedAt,
+		Id:                  proxy.Id,
+		Name:                proxy.Name,
+		Scheme:              proxy.Scheme,
+		URLMasked:           service.MaskBrowserProxyURL(proxyURL),
+		HasCredentials:      parsed != nil && parsed.User != nil,
+		Enabled:             proxy.Enabled,
+		MaxChannelAccounts:  proxy.MaxChannelAccounts,
+		ChannelAccountCount: channelAccountCount,
+		ProfileCount:        profileCount,
+		CreatedAt:           proxy.CreatedAt,
+		UpdatedAt:           proxy.UpdatedAt,
 	}, nil
 }
 
@@ -976,6 +1239,7 @@ func normalizeBrowserProfileRequest(request browserProfileRequest, existing *mod
 	}
 	return &model.BrowserProfile{
 		Name:          name,
+		ChannelId:     request.ChannelId,
 		AgentId:       request.AgentId,
 		ProxyId:       request.ProxyId,
 		FingerprintId: request.FingerprintId,
@@ -985,7 +1249,7 @@ func normalizeBrowserProfileRequest(request browserProfileRequest, existing *mod
 	}, nil
 }
 
-func browserProfileResponses(availableOnly bool) ([]browserProfileResponse, error) {
+func browserProfileResponses(availableOnly bool, channelId int) ([]browserProfileResponse, error) {
 	profiles, err := model.ListBrowserProfiles()
 	if err != nil {
 		return nil, err
@@ -1002,24 +1266,62 @@ func browserProfileResponses(availableOnly bool) ([]browserProfileResponse, erro
 	if err != nil {
 		return nil, err
 	}
+	channels, err := model.GetChannelsByType(0, -1, true, constant.ChannelTypeCodex)
+	if err != nil {
+		return nil, err
+	}
+	launches, err := model.ListActiveBrowserLaunches(time.Now().Unix())
+	if err != nil {
+		return nil, err
+	}
 
 	agentMap := make(map[int]model.BrowserAgent, len(agents))
 	for index := range agents {
 		agentMap[agents[index].Id] = agents[index]
 	}
 	proxyMap := make(map[int]model.BrowserProxy, len(proxies))
+	proxyIds := make([]int, 0, len(proxies))
 	for index := range proxies {
 		proxyMap[proxies[index].Id] = proxies[index]
+		proxyIds = append(proxyIds, proxies[index].Id)
+	}
+	proxyChannelCounts, err := model.CountChannelsByBrowserProxies(proxyIds)
+	if err != nil {
+		return nil, err
+	}
+	proxyProfileCounts, err := model.CountBrowserProfilesByProxies(proxyIds)
+	if err != nil {
+		return nil, err
 	}
 	fingerprintMap := make(map[int]model.BrowserFingerprint, len(fingerprints))
 	for index := range fingerprints {
 		fingerprintMap[fingerprints[index].Id] = fingerprints[index]
+	}
+	channelMap := make(map[int]*model.Channel, len(channels))
+	for _, channel := range channels {
+		channelMap[channel.Id] = channel
+	}
+	launchMap := make(map[int]model.BrowserLaunch, len(launches))
+	for index := range launches {
+		launchMap[launches[index].ProfileId] = launches[index]
+	}
+	currentChannelProxyId := 0
+	if channel := channelMap[channelId]; channel != nil {
+		currentChannelProxyId = channel.GetSetting().BrowserProxyId
 	}
 
 	now := time.Now().Unix()
 	responses := make([]browserProfileResponse, 0, len(profiles))
 	for index := range profiles {
 		profile := profiles[index]
+		if availableOnly {
+			if channelId == 0 && profile.ChannelId != nil {
+				continue
+			}
+			if channelId > 0 && profile.ChannelId != nil && *profile.ChannelId != channelId {
+				continue
+			}
+		}
 		agent, agentFound := agentMap[profile.AgentId]
 		proxy, proxyFound := proxyMap[profile.ProxyId]
 		fingerprint, fingerprintFound := fingerprintMap[profile.FingerprintId]
@@ -1040,15 +1342,38 @@ func browserProfileResponses(availableOnly bool) ([]browserProfileResponse, erro
 				continue
 			}
 		}
-		responses = append(responses, browserProfileResponse{
-			BrowserProfile:  profile,
-			AgentName:       agent.Name,
-			AgentOnline:     agent.Enabled && agent.LastSeenAt >= now-45,
-			AgentRuntimes:   runtimes,
-			ProxyName:       proxy.Name,
-			FingerprintName: fingerprint.Name,
-		})
+		response := browserProfileResponse{
+			BrowserProfile:           profile,
+			AgentName:                agent.Name,
+			AgentOnline:              agent.Enabled && agent.LastSeenAt >= now-45,
+			AgentRuntimes:            runtimes,
+			ProxyName:                proxy.Name,
+			ProxyMaxChannelAccounts:  proxy.MaxChannelAccounts,
+			ProxyChannelAccountCount: proxyChannelCounts[proxy.Id],
+			ProxyProfileCount:        proxyProfileCounts[proxy.Id],
+			ProxyAtCapacity:          proxy.MaxChannelAccounts > 0 && proxyChannelCounts[proxy.Id] >= int64(proxy.MaxChannelAccounts) && currentChannelProxyId != proxy.Id,
+			FingerprintName:          fingerprint.Name,
+		}
+		if profile.ChannelId != nil {
+			if channel := channelMap[*profile.ChannelId]; channel != nil {
+				response.ChannelName = channel.Name
+			}
+		}
+		if launch, found := launchMap[profile.Id]; found {
+			response.ActiveLaunchId = launch.Id
+			response.ActiveLaunchStatus = launch.Status
+		}
+		responses = append(responses, response)
 	}
+	sort.SliceStable(responses, func(left int, right int) bool {
+		if responses[left].ProxyProfileCount != responses[right].ProxyProfileCount {
+			return responses[left].ProxyProfileCount < responses[right].ProxyProfileCount
+		}
+		if responses[left].ProxyChannelAccountCount != responses[right].ProxyChannelAccountCount {
+			return responses[left].ProxyChannelAccountCount < responses[right].ProxyChannelAccountCount
+		}
+		return responses[left].Id < responses[right].Id
+	})
 	return responses, nil
 }
 

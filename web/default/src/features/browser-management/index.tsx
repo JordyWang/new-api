@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Bot, Fingerprint, Globe2, Plus, UserRoundCog } from 'lucide-react'
+import { Bot, Fingerprint, Plus, UserRoundCog } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -32,18 +32,20 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
 import {
   browserManagementQueryKeys,
+  cancelBrowserLaunch,
   deleteBrowserAgent,
   deleteBrowserFingerprint,
   deleteBrowserProfile,
-  deleteBrowserProxy,
+  launchBrowserProfile,
   listBrowserAgents,
   listBrowserFingerprints,
+  listBrowserProfileChannels,
   listBrowserProfiles,
   listBrowserProxies,
   resetBrowserProfile,
   rotateBrowserAgentToken,
 } from './api'
-import { AgentDialog, ProxyDialog } from './components/agent-proxy-dialogs'
+import { AgentDialog } from './components/agent-proxy-dialogs'
 import { AgentTokenDialog } from './components/agent-token-dialog'
 import { FingerprintDialog } from './components/fingerprint-dialog'
 import { ProfileDialog } from './components/profile-dialog'
@@ -51,26 +53,18 @@ import {
   AgentsTable,
   FingerprintsTable,
   ProfilesTable,
-  ProxiesTable,
 } from './components/resource-tables'
-import type {
-  BrowserAgent,
-  BrowserFingerprint,
-  BrowserProfile,
-  BrowserProxy,
-} from './types'
+import type { BrowserAgent, BrowserFingerprint, BrowserProfile } from './types'
 
-type ResourceTab = 'agents' | 'proxies' | 'fingerprints' | 'profiles'
+type ResourceTab = 'agents' | 'fingerprints' | 'profiles'
 
 type DeleteTarget =
   | { kind: 'agent'; id: number; name: string }
-  | { kind: 'proxy'; id: number; name: string }
   | { kind: 'fingerprint'; id: number; name: string }
   | { kind: 'profile'; id: number; name: string }
 
 const TAB_ICONS = {
   agents: Bot,
-  proxies: Globe2,
   fingerprints: Fingerprint,
   profiles: UserRoundCog,
 } as const
@@ -81,8 +75,6 @@ export function BrowserManagement() {
   const [activeTab, setActiveTab] = useState<ResourceTab>('agents')
   const [agentEditorOpen, setAgentEditorOpen] = useState(false)
   const [editingAgent, setEditingAgent] = useState<BrowserAgent | null>(null)
-  const [proxyEditorOpen, setProxyEditorOpen] = useState(false)
-  const [editingProxy, setEditingProxy] = useState<BrowserProxy | null>(null)
   const [fingerprintEditorOpen, setFingerprintEditorOpen] = useState(false)
   const [editingFingerprint, setEditingFingerprint] =
     useState<BrowserFingerprint | null>(null)
@@ -111,7 +103,11 @@ export function BrowserManagement() {
   const profilesQuery = useQuery({
     queryKey: browserManagementQueryKeys.profiles(),
     queryFn: listBrowserProfiles,
-    refetchInterval: 15_000,
+    refetchInterval: 5_000,
+  })
+  const profileChannelsQuery = useQuery({
+    queryKey: browserManagementQueryKeys.profileChannels(),
+    queryFn: listBrowserProfileChannels,
   })
 
   const deleteMutation = useMutation({
@@ -119,8 +115,6 @@ export function BrowserManagement() {
       switch (target.kind) {
         case 'agent':
           return deleteBrowserAgent(target.id)
-        case 'proxy':
-          return deleteBrowserProxy(target.id)
         case 'fingerprint':
           return deleteBrowserFingerprint(target.id)
         case 'profile':
@@ -173,13 +167,48 @@ export function BrowserManagement() {
     },
   })
 
+  const launchMutation = useMutation({
+    mutationFn: (profile: BrowserProfile) => launchBrowserProfile(profile.id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: browserManagementQueryKeys.profiles(),
+      })
+      toast.success(t('Browser launch requested'))
+    },
+    onError: (error) => {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : t('Failed to open browser profile')
+      )
+    },
+  })
+
+  const stopMutation = useMutation({
+    mutationFn: (profile: BrowserProfile) =>
+      cancelBrowserLaunch(profile.active_launch_id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: browserManagementQueryKeys.profiles(),
+      })
+      toast.success(t('Browser stop requested'))
+    },
+    onError: (error) => {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : t('Failed to stop browser profile')
+      )
+    },
+  })
+
   const agents = agentsQuery.data ?? []
   const proxies = proxiesQuery.data ?? []
   const fingerprints = fingerprintsQuery.data ?? []
   const profiles = profilesQuery.data ?? []
+  const profileChannels = profileChannelsQuery.data ?? []
   const activeQuery = {
     agents: agentsQuery,
-    proxies: proxiesQuery,
     fingerprints: fingerprintsQuery,
     profiles: profilesQuery,
   }[activeTab]
@@ -191,10 +220,6 @@ export function BrowserManagement() {
       case 'agents':
         setEditingAgent(null)
         setAgentEditorOpen(true)
-        break
-      case 'proxies':
-        setEditingProxy(null)
-        setProxyEditorOpen(true)
         break
       case 'fingerprints':
         setEditingFingerprint(null)
@@ -244,24 +269,6 @@ export function BrowserManagement() {
           />
         )
         break
-      case 'proxies':
-        tabContent = (
-          <ProxiesTable
-            data={proxies}
-            onEdit={(proxy) => {
-              setEditingProxy(proxy)
-              setProxyEditorOpen(true)
-            }}
-            onDelete={(proxy) =>
-              setDeleteTarget({
-                kind: 'proxy',
-                id: proxy.id,
-                name: proxy.name,
-              })
-            }
-          />
-        )
-        break
       case 'fingerprints':
         tabContent = (
           <FingerprintsTable
@@ -284,6 +291,8 @@ export function BrowserManagement() {
         tabContent = (
           <ProfilesTable
             data={profiles}
+            onLaunch={(profile) => launchMutation.mutate(profile)}
+            onStop={(profile) => stopMutation.mutate(profile)}
             onEdit={(profile) => {
               setEditingProfile(profile)
               setProfileEditorOpen(true)
@@ -314,7 +323,9 @@ export function BrowserManagement() {
             disabled={activeTab === 'profiles' && !canCreateProfile}
             title={
               activeTab === 'profiles' && !canCreateProfile
-                ? t('Create an agent, proxy, and fingerprint first')
+                ? t(
+                    'Create an agent, fingerprint, and a proxy in Proxy Management first'
+                  )
                 : undefined
             }
           >
@@ -345,10 +356,6 @@ export function BrowserManagement() {
                   <Bot />
                   {t('Agents')}
                 </TabsTrigger>
-                <TabsTrigger value='proxies'>
-                  <Globe2 />
-                  {t('Proxies')}
-                </TabsTrigger>
                 <TabsTrigger value='fingerprints'>
                   <Fingerprint />
                   {t('Fingerprints')}
@@ -372,11 +379,6 @@ export function BrowserManagement() {
         agent={editingAgent}
         onToken={setAgentToken}
       />
-      <ProxyDialog
-        open={proxyEditorOpen}
-        onOpenChange={setProxyEditorOpen}
-        proxy={editingProxy}
-      />
       <FingerprintDialog
         open={fingerprintEditorOpen}
         onOpenChange={setFingerprintEditorOpen}
@@ -389,6 +391,7 @@ export function BrowserManagement() {
         agents={agents}
         proxies={proxies}
         fingerprints={fingerprints}
+        channels={profileChannels}
       />
       <AgentTokenDialog
         token={agentToken}

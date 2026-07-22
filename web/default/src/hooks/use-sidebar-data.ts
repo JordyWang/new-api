@@ -23,6 +23,7 @@ import {
   CreditCard,
   FileText,
   FlaskConical,
+  Globe2,
   Key,
   LayoutDashboard,
   ListTodo,
@@ -162,6 +163,12 @@ export function useSidebarData(): SidebarData {
             title: t('Browser Management'),
             url: '/browser-management',
             icon: Bot,
+            requiredRole: ROLE.SUPER_ADMIN,
+          },
+          {
+            title: t('Proxy Management'),
+            url: '/proxy-management',
+            icon: Globe2,
             requiredRole: ROLE.SUPER_ADMIN,
           },
           {

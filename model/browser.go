@@ -3,6 +3,7 @@ package model
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -14,8 +15,10 @@ import (
 )
 
 const (
-	BrowserAgentStatusOffline = "offline"
-	BrowserAgentStatusOnline  = "online"
+	BrowserAgentStatusOffline          = "offline"
+	BrowserAgentStatusOnline           = "online"
+	DefaultBrowserProxyChannelAccounts = 5
+	MaxBrowserProxyChannelAccounts     = 100000
 
 	CodexOAuthFlowStatusPending   = browseragentapi.FlowStatusPending
 	CodexOAuthFlowStatusClaimed   = browseragentapi.FlowStatusClaimed
@@ -27,16 +30,28 @@ const (
 )
 
 var (
-	ErrBrowserAgentBusy       = errors.New("browser agent already has an active OAuth flow")
-	ErrCodexOAuthFlowExpired  = errors.New("codex OAuth flow expired")
-	ErrCodexOAuthFlowState    = errors.New("codex OAuth flow is not in the required state")
-	ErrCodexOAuthFlowInstance = errors.New("codex OAuth flow belongs to another agent instance")
+	ErrBrowserAgentBusy         = errors.New("browser agent already has an active browser operation")
+	ErrBrowserProfileBound      = errors.New("browser profile is bound to another channel")
+	ErrBrowserChannelBound      = errors.New("channel is bound to another browser profile")
+	ErrBrowserProxyChannelLimit = errors.New("managed proxy channel account limit reached")
+	ErrCodexOAuthFlowExpired    = errors.New("codex OAuth flow expired")
+	ErrCodexOAuthFlowState      = errors.New("codex OAuth flow is not in the required state")
+	ErrCodexOAuthFlowInstance   = errors.New("codex OAuth flow belongs to another agent instance")
+	ErrBrowserLaunchExpired     = errors.New("browser launch expired")
+	ErrBrowserLaunchState       = errors.New("browser launch is not in the required state")
+	ErrBrowserLaunchInstance    = errors.New("browser launch belongs to another agent instance")
 )
 
 var codexOAuthBrowserActiveStatuses = []string{
 	CodexOAuthFlowStatusPending,
 	CodexOAuthFlowStatusClaimed,
 	CodexOAuthFlowStatusRunning,
+}
+
+var browserLaunchActiveStatuses = []string{
+	browseragentapi.FlowStatusPending,
+	browseragentapi.FlowStatusClaimed,
+	browseragentapi.FlowStatusRunning,
 }
 
 type BrowserAgent struct {
@@ -60,13 +75,14 @@ func (BrowserAgent) TableName() string {
 }
 
 type BrowserProxy struct {
-	Id            int    `json:"id" gorm:"primaryKey"`
-	Name          string `json:"name" gorm:"type:varchar(128);not null"`
-	URLCiphertext string `json:"-" gorm:"type:text;not null"`
-	Scheme        string `json:"scheme" gorm:"type:varchar(16);index"`
-	Enabled       bool   `json:"enabled"`
-	CreatedAt     int64  `json:"created_at" gorm:"bigint"`
-	UpdatedAt     int64  `json:"updated_at" gorm:"bigint"`
+	Id                 int    `json:"id" gorm:"primaryKey"`
+	Name               string `json:"name" gorm:"type:varchar(128);not null"`
+	URLCiphertext      string `json:"-" gorm:"type:text;not null"`
+	Scheme             string `json:"scheme" gorm:"type:varchar(16);index"`
+	Enabled            bool   `json:"enabled"`
+	MaxChannelAccounts int    `json:"max_channel_accounts"`
+	CreatedAt          int64  `json:"created_at" gorm:"bigint"`
+	UpdatedAt          int64  `json:"updated_at" gorm:"bigint"`
 }
 
 func (BrowserProxy) TableName() string {
@@ -94,6 +110,7 @@ func (BrowserFingerprint) TableName() string {
 type BrowserProfile struct {
 	Id            int    `json:"id" gorm:"primaryKey"`
 	Name          string `json:"name" gorm:"type:varchar(128);not null"`
+	ChannelId     *int   `json:"channel_id" gorm:"uniqueIndex"`
 	AgentId       int    `json:"agent_id" gorm:"index;not null"`
 	ProxyId       int    `json:"proxy_id" gorm:"index;not null"`
 	FingerprintId int    `json:"fingerprint_id" gorm:"index;not null"`
@@ -107,6 +124,30 @@ type BrowserProfile struct {
 
 func (BrowserProfile) TableName() string {
 	return "browser_profiles"
+}
+
+type BrowserLaunch struct {
+	Id              string `json:"id" gorm:"type:varchar(40);primaryKey"`
+	ProfileId       int    `json:"profile_id" gorm:"index;not null"`
+	ChannelId       int    `json:"channel_id" gorm:"index;not null"`
+	AgentId         int    `json:"agent_id" gorm:"index;not null"`
+	ProxyId         int    `json:"proxy_id" gorm:"index;not null"`
+	FingerprintId   int    `json:"fingerprint_id" gorm:"index;not null"`
+	Status          string `json:"status" gorm:"type:varchar(32);index;not null"`
+	AgentInstanceId string `json:"agent_instance_id" gorm:"type:varchar(64);index"`
+	StartURL        string `json:"-" gorm:"type:text;not null"`
+	ExpiresAt       int64  `json:"expires_at" gorm:"bigint;index"`
+	LeaseExpiresAt  int64  `json:"lease_expires_at" gorm:"bigint;index"`
+	CreatedAt       int64  `json:"created_at" gorm:"bigint"`
+	UpdatedAt       int64  `json:"updated_at" gorm:"bigint"`
+	ClaimedAt       int64  `json:"claimed_at" gorm:"bigint"`
+	RunningAt       int64  `json:"running_at" gorm:"bigint"`
+	CompletedAt     int64  `json:"completed_at" gorm:"bigint"`
+	ErrorMessage    string `json:"error_message" gorm:"type:varchar(512)"`
+}
+
+func (BrowserLaunch) TableName() string {
+	return "browser_launches"
 }
 
 type CodexOAuthFlow struct {
@@ -215,24 +256,53 @@ func GetBrowserProxyById(id int) (*BrowserProxy, error) {
 }
 
 func CreateBrowserProxy(proxy *BrowserProxy) error {
+	if proxy.MaxChannelAccounts < 0 || proxy.MaxChannelAccounts > MaxBrowserProxyChannelAccounts {
+		return fmt.Errorf("managed proxy channel account limit must be between 0 and %d", MaxBrowserProxyChannelAccounts)
+	}
 	return DB.Create(proxy).Error
 }
 
 func UpdateBrowserProxy(proxy *BrowserProxy, updateURL bool) error {
-	updates := map[string]any{
-		"name":       proxy.Name,
-		"enabled":    proxy.Enabled,
-		"updated_at": proxy.UpdatedAt,
+	if proxy.MaxChannelAccounts < 0 || proxy.MaxChannelAccounts > MaxBrowserProxyChannelAccounts {
+		return fmt.Errorf("managed proxy channel account limit must be between 0 and %d", MaxBrowserProxyChannelAccounts)
 	}
-	if updateURL {
-		updates["url_ciphertext"] = proxy.URLCiphertext
-		updates["scheme"] = proxy.Scheme
-	}
-	return DB.Model(&BrowserProxy{}).Where("id = ?", proxy.Id).Updates(updates).Error
+	return DB.Transaction(func(tx *gorm.DB) error {
+		var stored BrowserProxy
+		if err := lockForUpdate(tx).First(&stored, "id = ?", proxy.Id).Error; err != nil {
+			return err
+		}
+		if proxy.MaxChannelAccounts > 0 {
+			counts, err := countChannelsByBrowserProxyIds(tx, []int{proxy.Id})
+			if err != nil {
+				return err
+			}
+			if counts[proxy.Id] > int64(proxy.MaxChannelAccounts) {
+				return browserProxyChannelLimitError(&stored, proxy.MaxChannelAccounts, counts[proxy.Id], 0)
+			}
+		}
+
+		updates := map[string]any{
+			"name":                 proxy.Name,
+			"enabled":              proxy.Enabled,
+			"max_channel_accounts": proxy.MaxChannelAccounts,
+			"updated_at":           proxy.UpdatedAt,
+		}
+		if updateURL {
+			updates["url_ciphertext"] = proxy.URLCiphertext
+			updates["scheme"] = proxy.Scheme
+		}
+		return tx.Model(&BrowserProxy{}).Where("id = ?", proxy.Id).Updates(updates).Error
+	})
 }
 
 func DeleteBrowserProxy(id int) error {
 	return DB.Delete(&BrowserProxy{}, id).Error
+}
+
+func normalizeBrowserProxyChannelLimits() error {
+	return DB.Model(&BrowserProxy{}).
+		Where("max_channel_accounts IS NULL").
+		Update("max_channel_accounts", DefaultBrowserProxyChannelAccounts).Error
 }
 
 func ListBrowserFingerprints() ([]BrowserFingerprint, error) {
@@ -285,20 +355,157 @@ func GetBrowserProfileById(id int) (*BrowserProfile, error) {
 	return &profile, nil
 }
 
+func GetBrowserProfileByChannelId(channelId int) (*BrowserProfile, error) {
+	var profile BrowserProfile
+	if err := DB.First(&profile, "channel_id = ?", channelId).Error; err != nil {
+		return nil, err
+	}
+	return &profile, nil
+}
+
+func ValidateBrowserProfileChannelBinding(channel *Channel) error {
+	return validateBrowserProfileChannelBinding(DB, channel)
+}
+
+func validateBrowserProfileChannelBinding(tx *gorm.DB, channel *Channel) error {
+	if !tx.Migrator().HasTable(&BrowserProfile{}) {
+		return nil
+	}
+	var profile BrowserProfile
+	err := tx.First(&profile, "channel_id = ?", channel.Id).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if channel.Type != constant.ChannelTypeCodex {
+		return errors.New("a channel bound to a browser profile must remain a Codex channel")
+	}
+	setting, err := decodeChannelSettings(channel)
+	if err != nil {
+		return err
+	}
+	if setting.BrowserProxyId != profile.ProxyId {
+		return fmt.Errorf("channel must use browser profile managed proxy %d", profile.ProxyId)
+	}
+	var credentialBinding struct {
+		ManagedProxyId int `json:"managed_proxy_id"`
+	}
+	if strings.HasPrefix(strings.TrimSpace(channel.Key), "{") {
+		if err := common.UnmarshalJsonStr(channel.Key, &credentialBinding); err == nil && credentialBinding.ManagedProxyId > 0 && credentialBinding.ManagedProxyId != profile.ProxyId {
+			return fmt.Errorf("channel credential requires managed proxy %d, but browser profile uses proxy %d", credentialBinding.ManagedProxyId, profile.ProxyId)
+		}
+	}
+	return nil
+}
+
 func CreateBrowserProfile(profile *BrowserProfile) error {
-	return DB.Create(profile).Error
+	return DB.Transaction(func(tx *gorm.DB) error {
+		if err := syncBrowserProfileChannel(tx, profile); err != nil {
+			return err
+		}
+		return tx.Create(profile).Error
+	})
 }
 
 func UpdateBrowserProfile(profile *BrowserProfile) error {
-	return DB.Model(&BrowserProfile{}).Where("id = ?", profile.Id).Updates(map[string]any{
-		"name":           profile.Name,
-		"agent_id":       profile.AgentId,
-		"proxy_id":       profile.ProxyId,
-		"fingerprint_id": profile.FingerprintId,
-		"runtime_key":    profile.RuntimeKey,
-		"persistent":     profile.Persistent,
-		"enabled":        profile.Enabled,
-		"updated_at":     profile.UpdatedAt,
+	return DB.Transaction(func(tx *gorm.DB) error {
+		if err := syncBrowserProfileChannel(tx, profile); err != nil {
+			return err
+		}
+		return tx.Model(&BrowserProfile{}).Where("id = ?", profile.Id).Updates(map[string]any{
+			"name":           profile.Name,
+			"channel_id":     profile.ChannelId,
+			"agent_id":       profile.AgentId,
+			"proxy_id":       profile.ProxyId,
+			"fingerprint_id": profile.FingerprintId,
+			"runtime_key":    profile.RuntimeKey,
+			"persistent":     profile.Persistent,
+			"enabled":        profile.Enabled,
+			"updated_at":     profile.UpdatedAt,
+		}).Error
+	})
+}
+
+func syncBrowserProfileChannel(tx *gorm.DB, profile *BrowserProfile) error {
+	if profile.ChannelId == nil {
+		return nil
+	}
+	if *profile.ChannelId <= 0 {
+		return errors.New("browser profile channel ID is invalid")
+	}
+
+	var channel Channel
+	if err := lockForUpdate(tx).First(&channel, "id = ?", *profile.ChannelId).Error; err != nil {
+		return fmt.Errorf("browser profile channel not found: %w", err)
+	}
+	if channel.Type != constant.ChannelTypeCodex {
+		return errors.New("browser profiles can only bind to Codex channels")
+	}
+
+	var count int64
+	query := tx.Model(&BrowserProfile{}).Where("channel_id = ?", *profile.ChannelId)
+	if profile.Id > 0 {
+		query = query.Where("id != ?", profile.Id)
+	}
+	if err := query.Count(&count).Error; err != nil {
+		return err
+	}
+	if count > 0 {
+		return ErrBrowserChannelBound
+	}
+
+	setting, err := decodeChannelSettings(&channel)
+	if err != nil {
+		return err
+	}
+	if setting.BrowserProxyId > 0 && setting.BrowserProxyId != profile.ProxyId {
+		return fmt.Errorf("channel uses managed proxy %d, but browser profile uses proxy %d", setting.BrowserProxyId, profile.ProxyId)
+	}
+	var credentialBinding struct {
+		ManagedProxyId int `json:"managed_proxy_id"`
+	}
+	if strings.HasPrefix(strings.TrimSpace(channel.Key), "{") {
+		if err := common.UnmarshalJsonStr(channel.Key, &credentialBinding); err == nil && credentialBinding.ManagedProxyId > 0 && credentialBinding.ManagedProxyId != profile.ProxyId {
+			return fmt.Errorf("channel credential requires managed proxy %d", credentialBinding.ManagedProxyId)
+		}
+	}
+	if setting.BrowserProxyId != profile.ProxyId {
+		if err := ensureBrowserProxyChannelCapacity(tx, map[int]int64{profile.ProxyId: 1}); err != nil {
+			return err
+		}
+	}
+	if setting.BrowserProxyId == profile.ProxyId && strings.TrimSpace(setting.Proxy) == "" {
+		return nil
+	}
+	setting.BrowserProxyId = profile.ProxyId
+	setting.Proxy = ""
+	settingBytes, err := common.Marshal(setting)
+	if err != nil {
+		return err
+	}
+	return tx.Model(&Channel{}).Where("id = ?", channel.Id).Update("setting", string(settingBytes)).Error
+}
+
+func BindBrowserProfileToChannel(tx *gorm.DB, profileId int, channelId int, proxyId int, now int64) error {
+	var profile BrowserProfile
+	if err := lockForUpdate(tx).First(&profile, "id = ?", profileId).Error; err != nil {
+		return err
+	}
+	if profile.ProxyId != proxyId {
+		return fmt.Errorf("browser profile proxy changed from %d to %d during browser operation", proxyId, profile.ProxyId)
+	}
+	if profile.ChannelId != nil && *profile.ChannelId != channelId {
+		return ErrBrowserProfileBound
+	}
+	profile.ChannelId = &channelId
+	if err := syncBrowserProfileChannel(tx, &profile); err != nil {
+		return err
+	}
+	return tx.Model(&BrowserProfile{}).Where("id = ?", profile.Id).Updates(map[string]any{
+		"channel_id": channelId,
+		"updated_at": now,
 	}).Error
 }
 
@@ -325,31 +532,180 @@ func CountBrowserProfilesByProxy(proxyId int) (int64, error) {
 	return count, err
 }
 
+func CountBrowserProfilesByProxies(proxyIds []int) (map[int]int64, error) {
+	counts := make(map[int]int64, len(proxyIds))
+	uniqueIds := make([]int, 0, len(proxyIds))
+	for _, proxyId := range proxyIds {
+		if proxyId <= 0 {
+			continue
+		}
+		if _, exists := counts[proxyId]; exists {
+			continue
+		}
+		counts[proxyId] = 0
+		uniqueIds = append(uniqueIds, proxyId)
+	}
+	if len(uniqueIds) == 0 {
+		return counts, nil
+	}
+
+	var rows []struct {
+		ProxyId int
+		Total   int64
+	}
+	if err := DB.Model(&BrowserProfile{}).
+		Select("proxy_id, COUNT(*) AS total").
+		Where("proxy_id IN ?", uniqueIds).
+		Group("proxy_id").
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		counts[row.ProxyId] = row.Total
+	}
+	return counts, nil
+}
+
 func CountChannelsByBrowserProxy(proxyId int) (int64, error) {
+	if proxyId <= 0 {
+		return 0, nil
+	}
+	counts, err := countChannelsByBrowserProxyIds(DB, []int{proxyId})
+	return counts[proxyId], err
+}
+
+func CountChannelsByBrowserProxies(proxyIds []int) (map[int]int64, error) {
+	return countChannelsByBrowserProxyIds(DB, proxyIds)
+}
+
+func CheckBrowserProxyChannelCapacity(proxyId int, additionalAccounts int64) error {
+	if proxyId <= 0 || additionalAccounts <= 0 {
+		return nil
+	}
+	return DB.Transaction(func(tx *gorm.DB) error {
+		return ensureBrowserProxyChannelCapacity(tx, map[int]int64{proxyId: additionalAccounts})
+	})
+}
+
+func decodeChannelSettings(channel *Channel) (dto.ChannelSettings, error) {
+	setting := dto.ChannelSettings{}
+	if channel.Setting == nil || strings.TrimSpace(*channel.Setting) == "" {
+		return setting, nil
+	}
+	if err := common.Unmarshal([]byte(*channel.Setting), &setting); err != nil {
+		return dto.ChannelSettings{}, fmt.Errorf("decode channel %d setting: %w", channel.Id, err)
+	}
+	return setting, nil
+}
+
+func browserProxyChannelAdditions(channels []Channel) (map[int]int64, error) {
+	additions := make(map[int]int64)
+	for index := range channels {
+		setting, err := decodeChannelSettings(&channels[index])
+		if err != nil {
+			return nil, err
+		}
+		if setting.BrowserProxyId > 0 {
+			additions[setting.BrowserProxyId]++
+		}
+	}
+	return additions, nil
+}
+
+func countChannelsByBrowserProxyIds(tx *gorm.DB, proxyIds []int) (map[int]int64, error) {
+	counts := make(map[int]int64, len(proxyIds))
+	wanted := make(map[int]struct{}, len(proxyIds))
+	for _, proxyId := range proxyIds {
+		if proxyId <= 0 {
+			continue
+		}
+		counts[proxyId] = 0
+		wanted[proxyId] = struct{}{}
+	}
+	if len(wanted) == 0 {
+		return counts, nil
+	}
+
 	var channels []Channel
-	if err := DB.Model(&Channel{}).
+	if err := tx.Model(&Channel{}).
 		Select("id", "setting").
 		Where("setting IS NOT NULL AND setting != ''").
 		Find(&channels).Error; err != nil {
-		return 0, err
+		return nil, err
 	}
-
-	var count int64
 	for index := range channels {
-		var setting dto.ChannelSettings
-		if err := common.Unmarshal([]byte(*channels[index].Setting), &setting); err != nil {
-			return 0, fmt.Errorf("decode channel %d setting: %w", channels[index].Id, err)
+		setting, err := decodeChannelSettings(&channels[index])
+		if err != nil {
+			return nil, err
 		}
-		if setting.BrowserProxyId == proxyId {
-			count++
+		if _, ok := wanted[setting.BrowserProxyId]; ok {
+			counts[setting.BrowserProxyId]++
 		}
 	}
-	return count, nil
+	return counts, nil
+}
+
+func ensureBrowserProxyChannelCapacity(tx *gorm.DB, additions map[int]int64) error {
+	proxyIds := make([]int, 0, len(additions))
+	for proxyId, additionalAccounts := range additions {
+		if proxyId > 0 && additionalAccounts > 0 {
+			proxyIds = append(proxyIds, proxyId)
+		}
+	}
+	if len(proxyIds) == 0 {
+		return nil
+	}
+	sort.Ints(proxyIds)
+
+	proxies := make(map[int]BrowserProxy, len(proxyIds))
+	for _, proxyId := range proxyIds {
+		var proxy BrowserProxy
+		if err := lockForUpdate(tx).First(&proxy, "id = ?", proxyId).Error; err != nil {
+			return fmt.Errorf("managed proxy %d not found: %w", proxyId, err)
+		}
+		proxies[proxyId] = proxy
+	}
+	counts, err := countChannelsByBrowserProxyIds(tx, proxyIds)
+	if err != nil {
+		return err
+	}
+	for _, proxyId := range proxyIds {
+		proxy := proxies[proxyId]
+		if proxy.MaxChannelAccounts == 0 {
+			continue
+		}
+		additionalAccounts := additions[proxyId]
+		if counts[proxyId]+additionalAccounts > int64(proxy.MaxChannelAccounts) {
+			return browserProxyChannelLimitError(&proxy, proxy.MaxChannelAccounts, counts[proxyId], additionalAccounts)
+		}
+	}
+	return nil
+}
+
+func browserProxyChannelLimitError(proxy *BrowserProxy, limit int, currentAccounts int64, additionalAccounts int64) error {
+	return fmt.Errorf(
+		"%w: managed proxy %q (id %d) has %d of %d channel accounts assigned; requested %d additional",
+		ErrBrowserProxyChannelLimit,
+		proxy.Name,
+		proxy.Id,
+		currentAccounts,
+		limit,
+		additionalAccounts,
+	)
 }
 
 func CountBrowserProfilesByFingerprint(fingerprintId int) (int64, error) {
 	var count int64
 	err := DB.Model(&BrowserProfile{}).Where("fingerprint_id = ?", fingerprintId).Count(&count).Error
+	return count, err
+}
+
+func CountBrowserProfilesByChannelIds(channelIds []int) (int64, error) {
+	if len(channelIds) == 0 {
+		return 0, nil
+	}
+	var count int64
+	err := DB.Model(&BrowserProfile{}).Where("channel_id IN ?", channelIds).Count(&count).Error
 	return count, err
 }
 
@@ -363,6 +719,255 @@ func HasUnfinishedCodexOAuthFlowForProfile(profileId int, now int64) (bool, erro
 	return count > 0, err
 }
 
+func HasActiveBrowserLaunchForProfile(profileId int, now int64) (bool, error) {
+	if err := expireBrowserLaunches(DB, now); err != nil {
+		return false, err
+	}
+	var count int64
+	err := DB.Model(&BrowserLaunch{}).
+		Where("profile_id = ? AND expires_at > ? AND status IN ?", profileId, now, browserLaunchActiveStatuses).
+		Count(&count).Error
+	return count > 0, err
+}
+
+func ListActiveBrowserLaunches(now int64) ([]BrowserLaunch, error) {
+	if err := expireBrowserLaunches(DB, now); err != nil {
+		return nil, err
+	}
+	var launches []BrowserLaunch
+	err := DB.Where("expires_at > ? AND status IN ?", now, browserLaunchActiveStatuses).
+		Order("created_at desc").
+		Find(&launches).Error
+	return launches, err
+}
+
+func CreateExclusiveBrowserLaunch(launch *BrowserLaunch) error {
+	return DB.Transaction(func(tx *gorm.DB) error {
+		var agent BrowserAgent
+		if err := lockForUpdate(tx).First(&agent, "id = ?", launch.AgentId).Error; err != nil {
+			return err
+		}
+		if err := expireCodexOAuthFlows(tx, launch.CreatedAt); err != nil {
+			return err
+		}
+		if err := expireBrowserLaunches(tx, launch.CreatedAt); err != nil {
+			return err
+		}
+		busy, err := browserAgentHasActiveOperation(tx, launch.AgentId, launch.CreatedAt)
+		if err != nil {
+			return err
+		}
+		if busy {
+			return ErrBrowserAgentBusy
+		}
+		return tx.Create(launch).Error
+	})
+}
+
+func GetBrowserLaunchById(id string, now int64) (*BrowserLaunch, error) {
+	if err := expireBrowserLaunches(DB, now); err != nil {
+		return nil, err
+	}
+	var launch BrowserLaunch
+	if err := DB.First(&launch, "id = ?", id).Error; err != nil {
+		return nil, err
+	}
+	return &launch, nil
+}
+
+func ClaimBrowserLaunch(agentId int, instanceId string, now int64, leaseExpiresAt int64) (*BrowserLaunch, error) {
+	var claimed BrowserLaunch
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		var agent BrowserAgent
+		if err := lockForUpdate(tx).First(&agent, "id = ?", agentId).Error; err != nil {
+			return err
+		}
+		if err := expireBrowserLaunches(tx, now); err != nil {
+			return err
+		}
+		if err := lockForUpdate(tx).
+			Where("agent_id = ? AND expires_at > ?", agentId, now).
+			Where("status = ? OR (status IN ? AND lease_expires_at < ?)", browseragentapi.FlowStatusPending, []string{browseragentapi.FlowStatusClaimed, browseragentapi.FlowStatusRunning}, now).
+			Order("created_at asc").
+			First(&claimed).Error; err != nil {
+			return err
+		}
+		claimedAt := claimed.ClaimedAt
+		if claimedAt == 0 {
+			claimedAt = now
+		}
+		return tx.Model(&BrowserLaunch{}).Where("id = ?", claimed.Id).Updates(map[string]any{
+			"status":            browseragentapi.FlowStatusClaimed,
+			"agent_instance_id": instanceId,
+			"claimed_at":        claimedAt,
+			"lease_expires_at":  leaseExpiresAt,
+			"updated_at":        now,
+			"error_message":     "",
+		}).Error
+	})
+	if err != nil {
+		return nil, err
+	}
+	claimed.Status = browseragentapi.FlowStatusClaimed
+	claimed.AgentInstanceId = instanceId
+	claimed.LeaseExpiresAt = leaseExpiresAt
+	if claimed.ClaimedAt == 0 {
+		claimed.ClaimedAt = now
+	}
+	return &claimed, nil
+}
+
+func MarkBrowserLaunchRunning(agentId int, instanceId string, launchId string, now int64, leaseExpiresAt int64) error {
+	return DB.Transaction(func(tx *gorm.DB) error {
+		launch, err := getLockedBrowserLaunch(tx, launchId)
+		if err != nil {
+			return err
+		}
+		if err := validateBrowserLaunchInstance(launch, agentId, instanceId, now); err != nil {
+			return err
+		}
+		if launch.Status != browseragentapi.FlowStatusClaimed && launch.Status != browseragentapi.FlowStatusRunning {
+			return ErrBrowserLaunchState
+		}
+		runningAt := launch.RunningAt
+		if runningAt == 0 {
+			runningAt = now
+		}
+		return tx.Model(&BrowserLaunch{}).Where("id = ?", launch.Id).Updates(map[string]any{
+			"status":           browseragentapi.FlowStatusRunning,
+			"running_at":       runningAt,
+			"lease_expires_at": leaseExpiresAt,
+			"updated_at":       now,
+		}).Error
+	})
+}
+
+func CompleteBrowserLaunch(agentId int, instanceId string, launchId string, now int64) error {
+	return DB.Transaction(func(tx *gorm.DB) error {
+		launch, err := getLockedBrowserLaunch(tx, launchId)
+		if err != nil {
+			return err
+		}
+		if launch.Status == browseragentapi.FlowStatusCompleted && launch.AgentId == agentId && launch.AgentInstanceId == instanceId {
+			return nil
+		}
+		if err := validateBrowserLaunchInstance(launch, agentId, instanceId, now); err != nil {
+			return err
+		}
+		if launch.Status != browseragentapi.FlowStatusClaimed && launch.Status != browseragentapi.FlowStatusRunning {
+			return ErrBrowserLaunchState
+		}
+		return tx.Model(&BrowserLaunch{}).Where("id = ?", launch.Id).Updates(map[string]any{
+			"status":           browseragentapi.FlowStatusCompleted,
+			"completed_at":     now,
+			"lease_expires_at": 0,
+			"updated_at":       now,
+			"error_message":    "",
+		}).Error
+	})
+}
+
+func FailBrowserLaunch(agentId int, instanceId string, launchId string, message string, now int64) error {
+	return DB.Transaction(func(tx *gorm.DB) error {
+		launch, err := getLockedBrowserLaunch(tx, launchId)
+		if err != nil {
+			return err
+		}
+		if launch.Status == browseragentapi.FlowStatusFailed {
+			return nil
+		}
+		if launch.AgentId != agentId || launch.AgentInstanceId != instanceId {
+			return ErrBrowserLaunchInstance
+		}
+		if !isBrowserLaunchActiveStatus(launch.Status) {
+			return ErrBrowserLaunchState
+		}
+		return tx.Model(&BrowserLaunch{}).Where("id = ?", launch.Id).Updates(map[string]any{
+			"status":           browseragentapi.FlowStatusFailed,
+			"lease_expires_at": 0,
+			"updated_at":       now,
+			"error_message":    message,
+		}).Error
+	})
+}
+
+func CancelBrowserLaunch(launchId string, now int64) error {
+	return DB.Transaction(func(tx *gorm.DB) error {
+		launch, err := getLockedBrowserLaunch(tx, launchId)
+		if err != nil {
+			return err
+		}
+		if launch.Status == browseragentapi.FlowStatusCanceled {
+			return nil
+		}
+		if !isBrowserLaunchActiveStatus(launch.Status) {
+			return ErrBrowserLaunchState
+		}
+		return tx.Model(&BrowserLaunch{}).Where("id = ?", launch.Id).Updates(map[string]any{
+			"status":           browseragentapi.FlowStatusCanceled,
+			"lease_expires_at": 0,
+			"updated_at":       now,
+			"error_message":    "",
+		}).Error
+	})
+}
+
+func getLockedBrowserLaunch(tx *gorm.DB, launchId string) (*BrowserLaunch, error) {
+	var launch BrowserLaunch
+	if err := lockForUpdate(tx).First(&launch, "id = ?", launchId).Error; err != nil {
+		return nil, err
+	}
+	return &launch, nil
+}
+
+func validateBrowserLaunchInstance(launch *BrowserLaunch, agentId int, instanceId string, now int64) error {
+	if launch.AgentId != agentId || launch.AgentInstanceId != instanceId {
+		return ErrBrowserLaunchInstance
+	}
+	if launch.ExpiresAt <= now {
+		return ErrBrowserLaunchExpired
+	}
+	return nil
+}
+
+func expireBrowserLaunches(tx *gorm.DB, now int64) error {
+	return tx.Model(&BrowserLaunch{}).
+		Where("expires_at <= ? AND status IN ?", now, browserLaunchActiveStatuses).
+		Updates(map[string]any{
+			"status":           browseragentapi.FlowStatusExpired,
+			"lease_expires_at": 0,
+			"updated_at":       now,
+			"error_message":    "",
+		}).Error
+}
+
+func browserAgentHasActiveOperation(tx *gorm.DB, agentId int, now int64) (bool, error) {
+	var count int64
+	if err := tx.Model(&CodexOAuthFlow{}).
+		Where("agent_id = ? AND status IN ? AND expires_at > ?", agentId, codexOAuthBrowserActiveStatuses, now).
+		Count(&count).Error; err != nil {
+		return false, err
+	}
+	if count > 0 {
+		return true, nil
+	}
+	if err := tx.Model(&BrowserLaunch{}).
+		Where("agent_id = ? AND status IN ? AND expires_at > ?", agentId, browserLaunchActiveStatuses, now).
+		Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+func isBrowserLaunchActiveStatus(status string) bool {
+	for _, activeStatus := range browserLaunchActiveStatuses {
+		if status == activeStatus {
+			return true
+		}
+	}
+	return false
+}
+
 func CreateExclusiveCodexOAuthFlow(flow *CodexOAuthFlow) error {
 	return DB.Transaction(func(tx *gorm.DB) error {
 		var agent BrowserAgent
@@ -373,14 +978,14 @@ func CreateExclusiveCodexOAuthFlow(flow *CodexOAuthFlow) error {
 		if err := expireCodexOAuthFlows(tx, flow.CreatedAt); err != nil {
 			return err
 		}
-
-		var count int64
-		if err := tx.Model(&CodexOAuthFlow{}).
-			Where("agent_id = ? AND status IN ? AND expires_at > ?", flow.AgentId, codexOAuthBrowserActiveStatuses, flow.CreatedAt).
-			Count(&count).Error; err != nil {
+		if err := expireBrowserLaunches(tx, flow.CreatedAt); err != nil {
 			return err
 		}
-		if count > 0 {
+		busy, err := browserAgentHasActiveOperation(tx, flow.AgentId, flow.CreatedAt)
+		if err != nil {
+			return err
+		}
+		if busy {
 			return ErrBrowserAgentBusy
 		}
 		return tx.Create(flow).Error
@@ -517,7 +1122,18 @@ func CompleteCodexOAuthFlow(agentId int, instanceId string, flowId string, compl
 				return errors.New("channel type is not Codex")
 			}
 
-			channelSetting := channel.GetSetting()
+			channelSetting, err := decodeChannelSettings(&channel)
+			if err != nil {
+				return err
+			}
+			if channelSetting.BrowserProxyId > 0 && channelSetting.BrowserProxyId != flow.ProxyId {
+				return fmt.Errorf("channel uses managed proxy %d, but OAuth flow uses proxy %d", channelSetting.BrowserProxyId, flow.ProxyId)
+			}
+			if channelSetting.BrowserProxyId != flow.ProxyId {
+				if err := ensureBrowserProxyChannelCapacity(tx, map[int]int64{flow.ProxyId: 1}); err != nil {
+					return err
+				}
+			}
 			channelSetting.BrowserProxyId = flow.ProxyId
 			channelSetting.Proxy = ""
 			settingBytes, err := common.Marshal(channelSetting)
@@ -528,6 +1144,9 @@ func CompleteCodexOAuthFlow(agentId int, instanceId string, flowId string, compl
 				"key":     completion.ChannelKey,
 				"setting": string(settingBytes),
 			}).Error; err != nil {
+				return err
+			}
+			if err := BindBrowserProfileToChannel(tx, flow.ProfileId, channel.Id, flow.ProxyId, completion.CompletedAt); err != nil {
 				return err
 			}
 			credentialsCiphertext = ""
@@ -625,6 +1244,9 @@ func InsertChannelsWithCodexOAuthFlow(channels []Channel, flowId string, userId 
 		if flow.ExpiresAt <= now {
 			return ErrCodexOAuthFlowExpired
 		}
+		if err := ensureBrowserProxyChannelCapacity(tx, map[int]int64{flow.ProxyId: 1}); err != nil {
+			return err
+		}
 
 		if err := tx.Create(&channels).Error; err != nil {
 			return err
@@ -635,6 +1257,9 @@ func InsertChannelsWithCodexOAuthFlow(channels []Channel, flowId string, userId 
 			}
 		}
 		channelId := channels[0].Id
+		if err := BindBrowserProfileToChannel(tx, flow.ProfileId, channelId, flow.ProxyId, now); err != nil {
+			return err
+		}
 		return tx.Model(&CodexOAuthFlow{}).Where("id = ?", flow.Id).Updates(map[string]any{
 			"channel_id":             channelId,
 			"consumed_at":            now,

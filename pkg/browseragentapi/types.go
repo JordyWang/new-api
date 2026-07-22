@@ -24,6 +24,15 @@ type CodexOAuthClaim struct {
 	Fingerprint  CodexOAuthFingerprint `json:"fingerprint"`
 }
 
+type BrowserLaunchClaim struct {
+	LaunchId    string                `json:"launch_id"`
+	StartURL    string                `json:"start_url"`
+	ExpiresAt   int64                 `json:"expires_at"`
+	Profile     CodexOAuthProfile     `json:"profile"`
+	Proxy       CodexOAuthProxy       `json:"proxy"`
+	Fingerprint CodexOAuthFingerprint `json:"fingerprint"`
+}
+
 type CodexOAuthProfile struct {
 	Id         int    `json:"id"`
 	Name       string `json:"name"`

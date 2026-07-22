@@ -200,6 +200,156 @@ func executeOAuthFlow(parent context.Context, client *agentClient, instanceId st
 	}
 }
 
+func executeBrowserLaunch(parent context.Context, client *agentClient, instanceId string, config agentConfig, claim *browseragentapi.BrowserLaunchClaim) error {
+	if claim == nil {
+		return errors.New("browser launch claim is nil")
+	}
+	if err := validateBrowserLaunchClaim(claim, config.Runtimes); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithDeadline(parent, time.Unix(claim.ExpiresAt, 0))
+	defer cancel()
+
+	browserClaim := &browseragentapi.CodexOAuthClaim{
+		FlowId:      claim.LaunchId,
+		State:       claim.LaunchId,
+		ExpiresAt:   claim.ExpiresAt,
+		Profile:     claim.Profile,
+		Proxy:       claim.Proxy,
+		Fingerprint: claim.Fingerprint,
+	}
+	profileDir, cleanupProfile, err := prepareProfileDirectory(config.ProfileRoot, browserClaim)
+	if err != nil {
+		return err
+	}
+	defer cleanupProfile()
+
+	forwardProxy, err := startLocalForwardProxy(claim.Proxy.URL)
+	if err != nil {
+		return fmt.Errorf("start local proxy: %w", err)
+	}
+	defer forwardProxy.Close()
+	proxyIdentity, err := verifyProxyGeoIdentity(ctx, forwardProxy.URL(), config.GeoIPURL)
+	if err != nil {
+		return fmt.Errorf("verify managed proxy geography: %w", err)
+	}
+	log.Printf(
+		"verified managed proxy exit %s (%s, %s) for browser launch %s",
+		proxyIdentity.IP,
+		proxyIdentity.CountryCode,
+		proxyIdentity.Timezone,
+		claim.LaunchId,
+	)
+	fingerprintFile, err := writeFingerprintPayload(profileDir, claim.Fingerprint.Payload, proxyIdentity)
+	if err != nil {
+		return err
+	}
+
+	callback, err := startOAuthCallbackServer(claim.LaunchId, claim.StartURL, proxyIdentity)
+	if err != nil {
+		return fmt.Errorf("listen on browser preflight port 1455: %w", err)
+	}
+	defer callback.Close()
+	preflightURL := "http://127.0.0.1:1455/browser/preflight?token=" + url.QueryEscape(claim.LaunchId)
+
+	command, err := startManagedBrowser(
+		ctx,
+		config.Runtimes[claim.Profile.RuntimeKey],
+		profileDir,
+		fingerprintFile,
+		forwardProxy.URL(),
+		preflightURL,
+		browserClaim,
+		proxyIdentity,
+	)
+	if err != nil {
+		return err
+	}
+	defer stopBrowser(command)
+
+	if err := client.markLaunchRunning(ctx, instanceId, claim.LaunchId); err != nil {
+		return fmt.Errorf("mark browser launch running: %w", err)
+	}
+
+	browserExit := make(chan error, 1)
+	go func() {
+		browserExit <- command.Wait()
+	}()
+	leaseTicker := time.NewTicker(10 * time.Second)
+	defer leaseTicker.Stop()
+	statusTicker := time.NewTicker(3 * time.Second)
+	defer statusTicker.Stop()
+	preflightTimer := time.NewTimer(30 * time.Second)
+	defer preflightTimer.Stop()
+	preflightResult := callback.preflight
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case preflightErr := <-preflightResult:
+			if preflightErr != nil {
+				return fmt.Errorf("browser geography preflight failed: %w", preflightErr)
+			}
+			if !preflightTimer.Stop() {
+				select {
+				case <-preflightTimer.C:
+				default:
+				}
+			}
+			preflightResult = nil
+			log.Printf("browser geography preflight verified for launch %s", claim.LaunchId)
+		case <-preflightTimer.C:
+			if !callback.preflightVerified.Load() {
+				return errors.New("browser did not complete geography preflight within 30 seconds")
+			}
+			preflightResult = nil
+		case exitErr := <-browserExit:
+			if exitErr != nil {
+				return fmt.Errorf("Chromium exited unexpectedly: %w", exitErr)
+			}
+			if err := client.completeLaunch(ctx, instanceId, claim.LaunchId); err != nil {
+				return fmt.Errorf("complete browser launch: %w", err)
+			}
+			return nil
+		case <-leaseTicker.C:
+			if err := client.markLaunchRunning(ctx, instanceId, claim.LaunchId); err != nil {
+				return fmt.Errorf("renew browser launch lease: %w", err)
+			}
+		case <-statusTicker.C:
+			status, err := client.launchStatus(ctx, instanceId, claim.LaunchId)
+			if err != nil {
+				log.Printf("check browser launch %s status: %v", claim.LaunchId, err)
+				continue
+			}
+			switch status {
+			case browseragentapi.FlowStatusCanceled, browseragentapi.FlowStatusExpired, browseragentapi.FlowStatusFailed:
+				return errFlowTerminatedByServer
+			case browseragentapi.FlowStatusCompleted:
+				return nil
+			}
+		}
+	}
+}
+
+func validateBrowserLaunchClaim(claim *browseragentapi.BrowserLaunchClaim, runtimes map[string]string) error {
+	if !safeIdentifier(claim.LaunchId) || !safeIdentifier(claim.Profile.DataKey) {
+		return errors.New("control plane returned an invalid launch or profile key")
+	}
+	if _, ok := runtimes[claim.Profile.RuntimeKey]; !ok {
+		return fmt.Errorf("runtime %q is not configured locally", claim.Profile.RuntimeKey)
+	}
+	startURL, err := url.Parse(claim.StartURL)
+	if err != nil || startURL.Scheme != "https" || !strings.EqualFold(startURL.Host, "chatgpt.com") || startURL.Path != "/" || startURL.RawQuery != "" || startURL.Fragment != "" || startURL.User != nil {
+		return errors.New("control plane returned an invalid standalone browser URL")
+	}
+	if claim.ExpiresAt <= time.Now().Unix() {
+		return errors.New("browser launch is already expired")
+	}
+	_, _, err = browserproxy.ValidateURL(claim.Proxy.URL)
+	return err
+}
+
 func validateOAuthClaim(claim *browseragentapi.CodexOAuthClaim, runtimes map[string]string) error {
 	if !safeIdentifier(claim.FlowId) || !safeIdentifier(claim.Profile.DataKey) {
 		return errors.New("control plane returned an invalid flow or profile key")
