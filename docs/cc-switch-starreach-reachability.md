@@ -5,17 +5,17 @@
 - 调查日期：2026-07-21
 - 调查对象：`https://starreach.xyz/v1`
 - 对比对象：`https://prod-ai-gateway.timeresearch.biz:4000/v1`
-- 状态：根因已确认；Responses 兼容层已在本地代码实现并验收，尚未据此断言生产环境已部署
+- 状态：根因已确认；Responses 兼容层和裸 `/v1` 服务信息路由已在代码中实现并验收，生产环境需部署后才会生效
 
 ## 摘要
 
 CC Switch 对 Starreach 的测试结果 `operational / success=1 / http_status=404` 不矛盾。当前 CC Switch 执行的是轻量级 HTTP 可达性探测，而不是完整 API 功能测试：它向供应商配置的 `base_url` 发起 `GET` 请求，只要收到任意 HTTP 响应，就认为目标可达。HTTP 401、404、500 或 503 都可以对应 `success=true`；只有 DNS、连接、TLS 或超时等网络级错误才会判定为不可达。
 
-Starreach 的 Base URL 是 `https://starreach.xyz/v1`。new-api 没有注册 `GET /v1`，因此请求进入 API 404 处理器并返回 404。CC Switch 收到了有效 HTTP 响应，所以仍将它记录为 `Reachable`。
+Starreach 的 Base URL 是 `https://starreach.xyz/v1`。调查时的 new-api 没有注册 `GET /v1`，因此请求进入 API 404 处理器并返回 404。CC Switch 收到了有效 HTTP 响应，所以仍将它记录为 `Reachable`。当前代码已为 `GET` 和 `HEAD /v1` 注册公开的最小服务信息路由；部署后 CC Switch 对该 Base URL 的探测将收到 200。
 
 这说明：
 
-- `GET /v1` 返回 404 不影响 Codex 当前使用的流式 `POST /v1/responses`。
+- 调查时 `GET /v1` 返回 404 不影响 Codex 使用的流式 `POST /v1/responses`；当前代码已将裸 `/v1` 调整为 200。
 - CC Switch 的绿色状态只能证明地址可连接，不能证明鉴权、模型、请求格式或真实推理链路可用。
 - 调查时的生产版本存在 Responses API 兼容性缺口：字符串 `input` 和非流式请求会返回 400；当前代码已增加 Codex 渠道兼容层，生产环境需部署后才会生效。
 - 当前 `/healthz` 和 `/readyz` 虽然返回 200，但内容是前端 HTML，并不是真实健康检查。
@@ -69,7 +69,7 @@ response_time: 124 ms
 
 因此，不能根据 CC Switch 显示“成功”推断对比中转站的裸 `/v1` 一定返回 200；它即使返回 404，仍可能被判定为可达。
 
-### 2. new-api 没有注册 `GET /v1`
+### 2. 调查时 new-api 没有注册 `GET /v1`
 
 new-api 为 Responses API 注册的是：
 
@@ -78,7 +78,7 @@ POST /v1/responses
 POST /v1/responses/compact
 ```
 
-没有注册 `GET /v1`，也没有注册 `GET /v1/responses`。相关路由见 [`router/relay-router.go`](../router/relay-router.go#L69-L105)。
+调查时没有注册 `GET /v1`，也没有注册 `GET /v1/responses`。当前代码已增加 `GET` 和 `HEAD /v1`，`GET /v1/responses` 的 405 语义仍未实现。相关路由见 [`router/relay-router.go`](../router/relay-router.go)。
 
 所有未匹配的 `/v1` 请求都会进入统一 API 404 分支，见 [`router/web-router.go`](../router/web-router.go#L33-L44) 和 [`controller/relay.go`](../controller/relay.go#L464-L473)。因此裸请求返回：
 
@@ -96,7 +96,7 @@ Content-Type: application/json; charset=utf-8
 }
 ```
 
-完整因果链为：
+修复前的完整因果链为：
 
 ```text
 CC Switch GET https://starreach.xyz/v1
@@ -174,7 +174,7 @@ new-api 的请求 DTO 将 `input` 保存为原始 JSON，并将 `stream` 定义�
 4. 聚合路径继续提取 usage、图片生成标记和内置工具信息，供计费与日志链路使用。
 5. `/v1/responses/compact` 保持原有请求与响应语义，不强制切换为流式。
 
-实现见 [`relay/channel/codex/adaptor.go`](../relay/channel/codex/adaptor.go) 和 [`relay/channel/openai/relay_responses.go`](../relay/channel/openai/relay_responses.go)。这层转换只解决 Responses API 契约差异，不会改变 `GET /v1` 的路由结果。
+实现见 [`relay/channel/codex/adaptor.go`](../relay/channel/codex/adaptor.go) 和 [`relay/channel/openai/relay_responses.go`](../relay/channel/openai/relay_responses.go)。这层转换只解决 Responses API 契约差异；`GET /v1` 的状态由独立的公开服务信息路由处理。
 
 ## 本地兼容修复验收
 
@@ -278,9 +278,9 @@ HEAD /readyz -> 200 或 503
 
 不建议用一个全局 readiness 状态表示所有模型和上游渠道都可用。new-api 支持多个模型、渠道和故障转移路径，具体上游可用性更适合通过内部监控、合成请求或受保护的渠道状态接口展示。
 
-### P1：为裸 `/v1` 返回最小服务信息
+### 已实现：为裸 `/v1` 返回最小服务信息
 
-建议增加：
+当前代码已增加：
 
 ```http
 GET  /v1 -> 200 application/json
@@ -299,7 +299,7 @@ HEAD /v1 -> 200
 
 响应中不应暴露访问令牌、上游渠道、账户、内部模型映射、数据库状态或基础设施信息。
 
-注意：增加 `/healthz` 本身不会改变 CC Switch 记录的 404，因为当前 CC Switch 始终探测 provider 的 `base_url`，也就是 `/v1`。要让 CC Switch 的原始 `http_status` 变为 200，需要增加 `GET /v1`，或者让 CC Switch 支持独立配置健康检查 URL。
+注意：增加 `/healthz` 本身不会改变 CC Switch 记录的 404，因为当前 CC Switch 始终探测 provider 的 `base_url`，也就是 `/v1`。本次增加的 `GET /v1` 会在部署后将 CC Switch 记录的原始 `http_status` 改为 200。
 
 ### P2：完善 HTTP 方法语义
 
@@ -330,14 +330,14 @@ Gin 默认不会自动把已知路径上的错误方法转换为 405。实现时
 4. 流式 SSE 透传及 Codex 管理端通道测试。
 5. `/v1/responses/compact` 不受普通 Responses 强制流式逻辑影响。
 
-网页路由优化尚未实施，后续验收仍需覆盖：
+裸 `/v1` 服务信息路由已实现，本地路由级回归测试已覆盖 `GET` 和 `HEAD`的 200、JSON Content-Type、HEAD 空响应体及公开响应不包含敏感信息。部署后仍需用 CC Switch 确认现场记录已变为 `http_status=200`。
+
+其余网页路由优化尚未实施，后续验收仍需覆盖：
 
 1. `GET` 和 `HEAD /healthz` 返回 200，Content-Type 为 JSON 或 HEAD 的预期空响应，不再返回 HTML。
 2. readiness 正常时 `/readyz` 返回 200，必要依赖不可用时返回 503。
-3. `GET` 和 `HEAD /v1` 返回最小公开服务信息，不包含敏感配置。
-4. `GET /v1/responses` 返回 405，未知 `/v1/*` 仍返回 404。
-5. 缺少 token 仍返回 401，无可用模型渠道仍返回 503。
-6. CC Switch 探测 `/v1` 时记录 `success=true` 且 `http_status=200`。
+3. `GET /v1/responses` 返回 405，未知 `/v1/*` 仍返回 404。
+4. 缺少 token 仍返回 401，无可用模型渠道仍返回 503。
 
 ## 调查限制
 
@@ -347,6 +347,6 @@ Gin 默认不会自动把已知路径上的错误方法转换为 405。实现时
 
 ## 最终结论
 
-Starreach 的 404 是裸 `GET /v1` 路由缺失造成的。CC Switch 将该请求记录为成功，是因为其测试目标是 HTTP 可达性，而不是完整 API 功能；本次 Responses 兼容修复不会、也不需要改变这一判断。
+Starreach 调查时的 404 是裸 `GET /v1` 路由缺失造成的。CC Switch 将该请求记录为成功，是因为其测试目标是 HTTP 可达性，而不是完整 API 功能。当前代码已增加裸 `/v1` 公开服务信息路由，部署后可消除 CC Switch 记录中的 404。
 
-调查时确认的字符串输入和非流式兼容性缺口已在当前代码中修复并完成本地验收，生产行为仍以实际部署版本为准。网页路由属于独立后续项：显式 `/healthz` 和 `/readyz` 可消除 SPA 200 假健康，`GET /v1` 则主要改善 CC Switch 原始状态码、通用监控和人工排障体验。
+调查时确认的字符串输入和非流式兼容性缺口已在当前代码中修复并完成本地验收，生产行为仍以实际部署版本为准。`/healthz`、`/readyz` 和 `GET /v1/responses` 的 405 语义仍是独立后续项。

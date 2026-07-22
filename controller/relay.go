@@ -461,6 +461,19 @@ func RelayNotImplemented(c *gin.Context) {
 	})
 }
 
+func RelayServiceInfo(c *gin.Context) {
+	c.Header("Content-Type", "application/json; charset=utf-8")
+	if c.Request.Method == http.MethodHead {
+		c.Status(http.StatusOK)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"status":   "ok",
+		"service":  "new-api",
+		"protocol": "openai-compatible",
+	})
+}
+
 func RelayNotFound(c *gin.Context) {
 	err := types.OpenAIError{
 		Message: fmt.Sprintf("Invalid URL (%s %s)", c.Request.Method, c.Request.URL.Path),
